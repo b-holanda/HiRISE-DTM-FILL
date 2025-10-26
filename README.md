@@ -5,7 +5,8 @@
 ## Instalação
 
 ```bash
-# 3. Clone este repositório
+sudo apt install libgdal-dev g++ build-essential -y
+
 git clone https://github.com/b-holanda/HiRISE-DTM-FILL.git
 
 cd HiRISE-DTM-FILL

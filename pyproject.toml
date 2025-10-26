@@ -26,11 +26,12 @@ classifiers = [
 ]
 
 dependencies = [
+    "fire",
     "numpy",
     "torch",
     "torchvision",
     "timm",
-    "GDAL",
+    "GDAL==3.8.4",
     "pystac-client",
     "requests",
     "tqdm",
@@ -42,4 +43,4 @@ Homepage = "https://github.com/b-holanda/HiRISE-DTM-FILL"
 Issues = "https://github.com/b-holanda/HiRISE-DTM-FILL/issues"
 
 [project.scripts]
-marsfill = "marsfill.cli.__main__:main"
+marsfill = "marsfill.cli.__init__:main"

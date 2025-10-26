@@ -1,1 +1,12 @@
 .venv
+__pycache__/
+*.pyc
+.pytest_cache/
+.ipynb_checkpoints/
+.vscode/
+.DS_Store
+.env
+.env.*
+.pyright/
+marsfill.egg-info/
+dist/
