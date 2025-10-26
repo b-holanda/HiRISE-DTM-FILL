@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "marsfill"
+version = "0.1.0"
+description = "Uma ferramenta de Deep Learning (ViT) para preenchimento de lacunas (gap-filling) em DTMs HiRISE."
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [
+    {name = "Bruno R. Holanda", email = "brunorodriguesholanda@gmail.com"},
+]
+
+license = {text = "MIT License"}
+
+keywords = ["mars", "hirise", "dtm", "geospatial", "gis", "deep-learning", "inpainting", "vit"]
+
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: GIS",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Development Status :: 3 - Alpha",
+]
+
+dependencies = [
+    "numpy",
+    "torch",
+    "torchvision",
+    "timm",
+    "GDAL",
+    "pystac-client",
+    "requests",
+    "tqdm",
+    "scikit-learn"
+]
+
+[project.urls]
+Homepage = "https://github.com/b-holanda/HiRISE-DTM-FILL"
+Issues = "https://github.com/b-holanda/HiRISE-DTM-FILL/issues"
+
+[project.scripts]
+marsfill = "marsfill.cli.__main__:main"
