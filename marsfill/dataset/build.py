@@ -1,4 +1,5 @@
 import os
+import shutil
 import urllib
 import urllib.request
 
@@ -30,11 +31,12 @@ class Build:
         self._collection_nickname = collection_nickname
 
     def _download_datasets(self, catalog: Client) -> None:
-        response = catalog.search(collections=[self._collection], max_items=self._samples)
+        response = catalog.search(collections=[self._collection])
 
         logger.info(f"Encontrados {response.matched()} datasets")
 
         count = 1
+        datasets = {}
 
         for item in response.items():
             download_path = self._download_dir / "sources" / self._collection_nickname / str(count)
@@ -42,25 +44,49 @@ class Build:
             if not download_path.exists():
                 download_path.mkdir(exist_ok=True, parents=True)
 
-            logger.info(f"Processando dataset: {item.id} na local: {download_path} [{count}/{self._samples}]")
+            logger.info(f"Baixando: {download_path} [{count}/{self._samples}]")
+
+            datasets[download_path] = {
+                "invalid": 0,
+                "valid": 0,
+            }
 
             for asset_key, asset in item.assets.items():
-                if asset_key not in self._wanted_assets:
-                    logger.info(f"Pulando arquivo desnecessário (key): {asset_key}")
-                    continue
                 
+                logger.info(asset_key)
+
+                if asset_key not in self._wanted_assets:
+                    continue
+
                 try:
-                    logger.info(f"Fazendo download do arquivo: {os.path.basename(asset.href)}")
-                    urllib.request.urlretrieve(asset.href, download_path / f"{asset_key}.{os.path.basename(asset.href).split('.')[1]}")
+                    filename = f"{asset_key}.{os.path.basename(asset.href).split('.')[1]}"
+                    download_full_path = download_path / filename
+
+                    if download_full_path.exists():
+                        datasets[download_path]["valid"] += 1
+
+                        continue
+
+                    urllib.request.urlretrieve(asset.href, download_full_path)
+
+                    datasets[download_path]["valid"] += 1
 
                 except HTTPError as e:
                     if e.code == 404:
-                        logger.info(f"AVISO: Arquivo não encontrado (404): {asset.href}")
+                        datasets[download_path]["invalid"] += 1
+
                         continue
                     raise e
-                except Exception as e:
-                    logger.info(f"ERRO: Falha ao baixar {asset.href}: {e}")
-                    continue
+
+            if datasets[download_path]["invalid"] > 0:
+                logger.info(f"Removendo: {download_path} inválido")
+
+                shutil.rmtree(download_path)
+
+                continue
+
+            if (count == self._samples):
+                break
 
             count += 1
  

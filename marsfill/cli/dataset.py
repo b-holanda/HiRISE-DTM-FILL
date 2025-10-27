@@ -19,7 +19,7 @@ class Dataset:
             catalog_url: str = "https://stac.astrogeology.usgs.gov/api", 
             collection: str = "mro_ctx_controlled_usgs_dtms",
             collection_nickname = "ctx",
-            wanted_assets = ["orthoimage", "geoid_adjusted_dem", "thumbnail"]
+            wanted_assets = ["orthoimage"]
         ) -> None:
         """Constrói o dataset de treinamento e teste e salva na pasta especificada.
 

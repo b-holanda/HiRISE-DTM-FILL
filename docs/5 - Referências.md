@@ -1,4 +1,4 @@
-# Preenchimento de Lacunas (Gap-Filling) em DTMs CTX de Marte usando Inferência Monocular com Vision Transformers (ViT)
+# Preenchimento de Lacunas (Gap-Filling) em DTMs HiRISE usando Inferência Monocular com Vision Transformers (ViT)
 
 ## Referências
 
@@ -6,7 +6,9 @@ DOSOVITSKIY, Alexey et al. An image is worth 16x16 words: Transformers for image
 
 GODARD, Clément et al. Unsupervised monocular depth estimation with left-right consistency. In: IEEE CONFERENCE ON COMPUTER VISION AND PATTERN RECOGNITION (CVPR), 2017, Honolulu. Anais... Honolulu: IEEE, 2017. p. 6602-6611. DOI: 10.1109/CVPR.2017.699.
 
-MALIN, Michael C. et al. Context Camera Investigation on board the Mars Reconnaissance Orbiter. Journal of Geophysical Research: Planets, [S. l.], v. 112, n. E5, p. E05S04, mai. 2007. DOI: 10.1029/2006JE002808.
+KIRK, Randolph L. et al. An overview of the HiRISE DTM production pipeline. In: LUNAR AND PLANETARY SCIENCE CONFERENCE, 42., 2011, The Woodlands. Anais... The Woodlands, TX: LPI, 2011. Contribuição Nº 1608, p. 2264.
+
+MCEWEN, Alfred S. et al. Mars Reconnaissance Orbiter's High Resolution Imaging Science Experiment (HiRISE). Journal of Geophysical Research: Planets, [S. l.], v. 112, n. E5, p. E05S02, mai. 2007. DOI: 10.1029/2005JE002605.
 
 RANFTL, René et al. Vision transformers for dense prediction. In: IEEE/CVF INTERNATIONAL CONFERENCE ON COMPUTER VISION (ICCV), 2021, Montreal. Anais... Montreal: IEEE, 2021. p. 12179-12188. DOI: 10.1109/ICCV48922.2021.01196.
 
