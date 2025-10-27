@@ -1,4 +1,4 @@
-# Preenchimento de Lacunas (Gap-Filling) em DTMs HiRISE usando Inferência Monocular com Vision Transformers (ViT)
+# Preenchimento de Lacunas (Gap-Filling) em DTMs CTX de Marte usando Inferência Monocular com Vision Transformers (ViT)
 
 ## Metodologia
 
@@ -8,8 +8,8 @@
 
 - Fonte de Dados: Catálogo STAC do USGS Astrogeology.
 - Produtos de Dados:
-    - Ortoimagem HiRISE (Asset: ortho_jp2).
-    - DTM HiRISE (Asset: dtm_pds).
+    - Ortoimagem CTX (Asset: ortho_jp2).
+    - DTM CTX (Asset: dtm_pds).
 - Software: Python, pystac-client (para busca), GDAL/osgeo (para processamento), NumPy, Boto3
 - Hardware: S3
 

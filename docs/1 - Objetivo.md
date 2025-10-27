@@ -1,4 +1,4 @@
-# Preenchimento de Lacunas (Gap-Filling) em DTMs HiRISE usando Inferência Monocular com Vision Transformers (ViT)
+# Preenchimento de Lacunas (Gap-Filling) em DTMs CTX de Marte usando Inferência Monocular com Vision Transformers (ViT)
 
 ## Objetivo Geral
 
