@@ -5,15 +5,21 @@
 ## Instalação
 
 ```bash
-sudo apt install libgdal-dev g++ build-essential -y
-
 git clone https://github.com/b-holanda/HiRISE-DTM-FILL.git
 
 cd HiRISE-DTM-FILL
 
-python -m venv .venv
+wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
 
-source ./.venv/bin/actvate
+sudo chmod a+x Miniconda3-latest-Linux-x86_64.sh
+
+./Miniconda3-latest-Linux-x86_64.sh
+
+source  ~/miniconda3/bin/activate
+
+conda create -n marsfill-env -c conda-forge python=3.11 gdal numpy
+
+conda activate marsfill-env
 
 pip install -e .
 ```
@@ -24,20 +30,18 @@ pip install -e .
 marsfill --help
 ```
 
+### Gerar dataset usando 100 pares DTM+ORTHO da Hirise
+
 ```bash
-marsfill dataset:build
+marsfill dataset build 100
 ```
 
 ```bash
-marsfill model:train
+marsfill model train
 ```
 
 ```bash
-marsfill model:test
-```
-
-```bash
-marsfill model:load
+marsfill model test
 ```
 
 ```bash

@@ -8,16 +8,15 @@
 
 - Fonte de Dados: Catálogo STAC do USGS Astrogeology.
 - Produtos de Dados:
-    - Ortoimagem HiRISE (Asset: ortho_jp2).
-    - DTM HiRISE (Asset: dtm_pds).
-- Software: Python, pystac-client (para busca), GDAL/osgeo (para processamento), NumPy, Boto3
-- Hardware: S3
+    - Ortoimagem HiRISE (Asset: ORTHO.tif).
+    - DTM HiRISE (Asset: DTM.tif).
+- Software: Python, pystac-client (para busca), GDAL/osgeo (para processamento), NumPy
+- Hardware: 1 TB
 
 *Metodos*
 
-- Aquisição em Lote: Baixar $N$ (ex: $N=1000$) pares de ortho_jp2 e dtm_pds
+- Aquisição em Lote: Baixar $N$ (ex: $N=1000$) pares de ORTHO.tif e DTM.tif
 - Pré-processamento e Alinhamento:
-    - Para cada par, converter o DTM .img para GeoTIFF.
     - Usar gdalwarp para reamostrar o DTM, alinhando-o perfeitamente à grade da sua Ortoimagem correspondente.
 - Extração de Máscara de Lacuna:
     - Para cada DTM alinhado, gerar uma máscara binária identificando todos os pixels com valor NoData.

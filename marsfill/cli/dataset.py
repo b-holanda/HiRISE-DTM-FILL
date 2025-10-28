@@ -17,16 +17,16 @@ class Dataset:
             samples: int,
             output: str = "datasets",
             catalog_url: str = "https://stac.astrogeology.usgs.gov/api", 
-            collection: str = "mro_ctx_controlled_usgs_dtms",
-            collection_nickname = "ctx",
-            wanted_assets = ["orthoimage"]
+            collection: str = "mro_hirise_socet_dtms",
+            tile_size: int = 512,
+            stride: int = 256,
         ) -> None:
         """Constrói o dataset de treinamento e teste e salva na pasta especificada.
 
         Args:
             output (str): Caminho para a pasta onde o dataset será salvo. default: dataset
             catalog_url (str): API com catálogo de datasets. default: https://stac.astrogeology.usgs.gov/api
-            collection (str): coleção de datasets. default: mro_ctx_controlled_usgs_dtms
+            collection (str): coleção de datasets. default: mro_hirise_socet_dtms
         """
 
         download_dir = os.path.join(Path(__file__).parent.parent.parent, output)
@@ -42,6 +42,6 @@ class Dataset:
             collection=collection, 
             download_dir=Path(download_dir), 
             samples=samples,
-            collection_nickname=collection_nickname,
-            wanted_assets=wanted_assets
+            tile_size=tile_size,
+            stride=stride,
         ).run()

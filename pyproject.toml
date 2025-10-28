@@ -1,3 +1,6 @@
+[tool.setuptools]
+packages = ["marsfill"]
+
 [build-system]
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
@@ -12,13 +15,12 @@ authors = [
     {name = "Bruno R. Holanda", email = "brunorodriguesholanda@gmail.com"},
 ]
 
-license = {text = "MIT License"}
+license = "MIT"
 
 keywords = ["mars", "hirise", "dtm", "geospatial", "gis", "deep-learning", "inpainting", "vit"]
 
 classifiers = [
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Topic :: Scientific/Engineering :: GIS",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
@@ -31,7 +33,7 @@ dependencies = [
     "torch",
     "torchvision",
     "timm",
-    "GDAL==3.8.4",
+    "GDAL",
     "pystac-client",
     "requests",
     "tqdm",
