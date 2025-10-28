@@ -1,6 +1,5 @@
 import os
-import urllib
-import urllib.request
+import time
 import requests
 import re
 import random
@@ -38,7 +37,7 @@ class Build:
         self._assignments = []
 
     def _list_datasets(self, catalog: Client) -> None:
-        response = catalog.search(collections=[self._collection], max_items=self._samples)
+        response = catalog.search(collections=[self._collection], max_items=self._samples*2)
 
         logger.info(f"Encontrados {response.matched()} datasets")
 
@@ -65,15 +64,55 @@ class Build:
                 if (response.status_code == 200):
                     pair.append(CandidateFile(filename=filename, href=asset.href))
 
-                    if len(pair) == 2:
-                        break
+            if len(pair) < 2:
+                continue
 
             self._datasets.append(pair)
 
-    def _download_candidate(self, candidate: CandidateFile, out_dir: Path) -> None:
+            if len(self._datasets) == self._samples:
+                break
+
+    def _download_candidate(
+        self, candidate: CandidateFile, out_dir: Path, retries: int = 3, backoff_factor: float = 0.5
+    ) -> None:
         logger.info(f"Baixando: {os.path.basename(candidate.href)}...")
 
-        urllib.request.urlretrieve(candidate.href, out_dir)
+        r = None
+        for attempt in range(retries):
+            try:
+                r = requests.get(candidate.href, stream=True, timeout=(15, 300))
+                r.raise_for_status()
+
+                with open(out_dir, 'wb') as f:
+                    for chunk in r.iter_content(chunk_size=8192):
+                        f.write(chunk)
+                    
+                    logger.info(f"Download concluído para: {os.path.basename(candidate.href)}")
+                    return
+
+            except (requests.exceptions.ConnectionError,
+                    requests.exceptions.ReadTimeout,
+                    requests.exceptions.ChunkedEncodingError,
+                    BrokenPipeError) as e:
+
+                logger.info(
+                    f"Tentativa {attempt + 1}/{retries} falhou para {candidate.href} com erro: {e}"
+                )
+
+                if attempt + 1 == retries:
+                    logger.info(f"Falha final no download após {retries} tentativas.")
+                    raise e
+    
+                sleep_time = backoff_factor * (2 ** attempt)
+                logger.info(f"Aguardando {sleep_time:.2f}s para tentar novamente...")
+                time.sleep(sleep_time)
+
+            except requests.exceptions.HTTPError as e:
+                status = r.status_code if r is not None else 'unknown'
+
+                logger.info(f"Erro HTTP {status} para {candidate.href}. Não haverá retentativa.")
+                
+                raise e
 
     def _align_dtm_to_ortho(self, dtm: Path, ortho: Path, aligned: Path) -> None:
         logger.info("Gerando novo DTM alinhado com o arquivo orthoretificado")
