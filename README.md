@@ -17,9 +17,12 @@ sudo chmod a+x Miniconda3-latest-Linux-x86_64.sh
 
 source  ~/miniconda3/bin/activate
 
+
 conda create -n marsfill-env -c conda-forge python=3.11 gdal numpy
 
 conda activate marsfill-env
+
+conda install -c conda-forge libgdal-jp2openjpeg
 
 pip install -e .
 ```

@@ -1,12 +1,10 @@
 import os
 import time
 import requests
-import re
 import random
 import shutil
 
 from pathlib import Path
-from pystac_client import Client
 import numpy as np
 from osgeo import gdal
 
