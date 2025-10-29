@@ -100,7 +100,7 @@ class Build:
             yRes=abs(y_res),
             dstSRS=ortho_geo_projection,
             resampleAlg='cubic',
-            creationOptions=['COMPRESS=LZW'],
+            creationOptions=['COMPRESS=LZW', 'BIGTIFF=YES'],
         )
 
         os.remove(dtm)
@@ -159,7 +159,8 @@ class Build:
             normalized.shape[1],
             normalized.shape[0],
             1,
-            gdal.GDT_Float32
+            gdal.GDT_Float32,
+            options=['COMPRESS=LZW', 'BIGTIFF=YES'],
         )
 
         out_dataset.SetGeoTransform(new_geo_transform)
