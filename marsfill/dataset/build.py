@@ -105,9 +105,11 @@ class Build:
 
         os.remove(dtm)
 
-    def _normalize_pair(self, ortho_arr, dtm_arr, x: int, y: int):
-        ortho_tile = ortho_arr[y : y + self._tile_size, x : x + self._tile_size].astype(np.float32)
-        dtm_tile = dtm_arr[y : y + self._tile_size, x : x + self._tile_size].astype(np.float32)
+    def _normalize_pair(self, ortho_tile_arr, dtm_tile_arr):
+        """Normaliza um par de blocos (tiles) já lidos do disco."""
+
+        ortho_tile = ortho_tile_arr.astype(np.float32)
+        dtm_tile = dtm_tile_arr.astype(np.float32)
 
         min_o, max_o = ortho_tile.min(), ortho_tile.max()
         ortho_normalized = (ortho_tile - min_o) / (max_o - min_o + 1e-8)
@@ -176,45 +178,50 @@ class Build:
         ortho_dataset = gdal.Open(str(ortho))
         dtm_dataset = gdal.Open(str(dtm))
 
-        ortho_arr = ortho_dataset.ReadAsArray()
-        dtm_arr = dtm_dataset.ReadAsArray()
-
+        # Pega as infos dos *datasets*, não de arrays em memória
         base_geo_transform = ortho_dataset.GetGeoTransform()
         base_projection = ortho_dataset.GetProjection()
         nodata_val = dtm_dataset.GetRasterBand(1).GetNoDataValue()
 
-        ortho_dataset = None
-        dtm_dataset = None
+        # Pega as dimensões dos datasets
+        width = ortho_dataset.RasterXSize
+        height = ortho_dataset.RasterYSize
 
         if nodata_val is None:
             nodata_val = -3.4028234663852886e+38 
-    
-        nodata_mask = (dtm_arr == nodata_val) | np.isnan(dtm_arr)
-
-        height, width = ortho_arr.shape
+        
         tile_count = 0
+        
+        # Pega as bandas (camadas) dos arquivos para leitura
+        dtm_band = dtm_dataset.GetRasterBand(1)
+        ortho_band = ortho_dataset.GetRasterBand(1)
+
+        logger.info(f"Iniciando processamento de blocos para {ortho}...")
 
         for y in range(0, height - self._tile_size, self._stride):
             for x in range(0, width - self._tile_size, self._stride):
-                mask_tile_nodata = nodata_mask[y : y + self._tile_size, x : x + self._tile_size]
+                dtm_tile_arr = dtm_band.ReadAsArray(
+                    x, y, self._tile_size, self._tile_size
+                )
 
-                if np.any(mask_tile_nodata):
+                nodata_mask = (dtm_tile_arr == nodata_val) | np.isnan(dtm_tile_arr)
+                if np.any(nodata_mask):
                     logger.info("Pulando bloco pois contém nodata")
-
                     continue
 
-                logger.info(f"Noralizando bloco {tile_count}")
+                ortho_tile_arr = ortho_band.ReadAsArray(
+                    x, y, self._tile_size, self._tile_size
+                )
+
+                logger.info(f"Normalizando bloco {tile_count}")
 
                 ortho_normalized, dtm_normormalized = self._normalize_pair(
-                    ortho_arr=ortho_arr, 
-                    dtm_arr=dtm_arr, 
-                    x=x, 
-                    y=y
+                    ortho_tile_arr=ortho_tile_arr, 
+                    dtm_tile_arr=dtm_tile_arr
                 )
 
                 ortho_tile_path = out_dir / f"ORTHO_P{count}_T{tile_count}.tif"
                 dtm_tile_path = out_dir / f"DTM_P{count}_T{tile_count}.tif"
-
                 output_nodata = -9999.0
 
                 self._save_tile(
@@ -237,6 +244,11 @@ class Build:
                 )
 
                 tile_count += 1
+
+        ortho_dataset = None
+        dtm_dataset = None
+        
+        logger.info(f"Processamento de blocos concluído. {tile_count} blocos gerados.")
         return tile_count
 
     def run(self) -> None:
@@ -274,6 +286,10 @@ class Build:
             source_dtm_path = download_sources / os.path.basename(dtm_candidate)
             source_ortho_path = download_sources / os.path.basename(ortho_candidate)
             source_dtm_aligned = download_sources / "DTM_aligned.tif"
+
+            source_dtm_path.touch()
+            source_ortho_path.touch()
+            source_dtm_aligned.touch()
 
             try:
                 logger.info(f"Fazendo download par [{count}/{self._samples}]")
