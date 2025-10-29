@@ -14,7 +14,7 @@ class Dataset:
 
     def build(
             self, 
-            samples: int,
+            samples: int = 100,
             output: str = "datasets",
             urls_to_scan: list[str] = ["https://www.uahirise.org/PDS/DTM/PSP/", "https://www.uahirise.org/PDS/DTM/ESP/"],
             tile_size: int = 512,
@@ -23,7 +23,7 @@ class Dataset:
         """Constrói o dataset de treinamento e teste e salva na pasta especificada.
 
         Args:
-            samples (int): número de amostras
+            samples (int): número de amostras. default 100
             output (str): Caminho para a pasta onde o dataset será salvo. default: dataset
             urls_to_scan (str): API com catálogo de datasets. default: https://www.uahirise.org/PDS/DTM/PSP/ e https://www.uahirise.org/PDS/DTM/ESP/
             tile_size (int): tamanho do recorte. default 512

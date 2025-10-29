@@ -36,7 +36,7 @@ marsfill --help
 ### Gerar dataset usando 100 pares DTM+ORTHO da Hirise
 
 ```bash
-marsfill dataset build 100
+marsfill dataset build
 ```
 
 ```bash
