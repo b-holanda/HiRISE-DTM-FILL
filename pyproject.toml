@@ -37,7 +37,8 @@ dependencies = [
     "pystac-client",
     "requests",
     "tqdm",
-    "scikit-learn"
+    "scikit-learn",
+    "bs4"
 ]
 
 [project.urls]

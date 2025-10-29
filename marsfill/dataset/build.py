@@ -10,7 +10,8 @@ from pystac_client import Client
 import numpy as np
 from osgeo import gdal
 
-from marsfill.utils import Logger, CandidateType, CandidateFile, get_dtm_candidate, get_ortho_candidate
+from marsfill.utils import Logger
+from marsfill.dataset.hirise_indexer import ProductPair, HirisePDSIndexerDFS
 
 gdal.UseExceptions()
 
@@ -19,81 +20,38 @@ logger = Logger()
 class Build:
     def __init__(
             self, 
-            catalog_url: str, 
-            collection: str, 
+            urls_to_scan: list[str], 
             download_dir: Path,
             samples: int,
             tile_size: int,
             stride: int
         ) -> None:
-
-        self._catalog_url = catalog_url
-        self._collection = collection
+        self._urls_to_scan = urls_to_scan
         self._download_dir = download_dir
         self._samples = samples
         self._tile_size = tile_size
         self._stride = stride
-        self._datasets = []
         self._assignments = []
 
-    def _list_datasets(self, catalog: Client) -> None:
-        response = catalog.search(collections=[self._collection], max_items=self._samples*2)
+    def _list_datasets(self) -> list[ProductPair]:
+        indexer = HirisePDSIndexerDFS(self._urls_to_scan)
 
-        logger.info(f"Encontrados {response.matched()} datasets")
-
-        ortho_pattern = re.compile(r"^ESP_\d{6}_\d{4}_RED_[A-Z]_\d{2}_ORTHO\.tif$")
-        dtm_pattern = re.compile(r"^DTEPD_\d{6}_\d{4}_\d{6}_\d{4}_[A-Z]\d{2}\.tif$")
-
-        for item in response.items():
-            logger.info(f"Verificando dataset: {item.id}")
-
-            pair = []
-
-            for _, asset in item.assets.items():
-                filename = os.path.basename(asset.href)
-
-                if not dtm_pattern.match(filename) and not ortho_pattern.match(filename):
-                    continue
-
-                response = requests.head(asset.href)
-
-                if (response.status_code == 200):
-                    pair.append(CandidateFile(
-                        filename=filename, 
-                        href=asset.href,
-                        type=CandidateType.DTM if dtm_pattern.match(filename) else CandidateType.ORTHO
-                    ))
-
-            if len(pair) < 2:
-                continue
-
-            types_in_pair = {c.type for c in pair}
-            if CandidateType.DTM not in types_in_pair or CandidateType.ORTHO not in types_in_pair:
-                logger.info(
-                    f"Pulando item {item.id}: não contém um par DTM/ORTHO válido. (Tipos encontrados: {types_in_pair})"
-                )
-                continue
-
-            self._datasets.append(pair)
-
-            if len(self._datasets) == self._samples:
-                break
-
+        return indexer.index_pairs(max_pairs=self._samples)
     def _download_candidate(
-        self, candidate: CandidateFile, out_dir: Path, retries: int = 3, backoff_factor: float = 0.5
+        self, candidate: str, out_dir: Path, retries: int = 3, backoff_factor: float = 0.5
     ) -> None:
-        logger.info(f"Baixando: {os.path.basename(candidate.href)}...")
+        logger.info(f"Baixando: {os.path.basename(candidate)}...")
 
         for attempt in range(retries):
             try:
-                with requests.get(candidate.href, stream=True, timeout=(15, 300)) as r:
+                with requests.get(candidate, stream=True, timeout=(15, 300)) as r:
                     r.raise_for_status()
 
                     with open(out_dir, 'wb') as f:
                         for chunk in r.iter_content(chunk_size=8192):
                             f.write(chunk)
                         
-                    logger.info(f"Download concluído para: {os.path.basename(candidate.href)}")
+                    logger.info(f"Download concluído para: {os.path.basename(candidate)}")
                     return
 
             except (requests.exceptions.ConnectionError,
@@ -102,7 +60,7 @@ class Build:
                     BrokenPipeError) as e:
 
                 logger.info(
-                    f"Tentativa {attempt + 1}/{retries} falhou para {candidate.href} com erro: {e}"
+                    f"Tentativa {attempt + 1}/{retries} falhou para {candidate} com erro: {e}"
                 )
 
                 if attempt + 1 == retries:
@@ -115,7 +73,7 @@ class Build:
 
             except requests.exceptions.HTTPError as e:
                 status = e.response.status_code
-                logger.info(f"Erro HTTP {status} para {candidate.href}. Não haverá retentativa.")
+                logger.info(f"Erro HTTP {status} para {candidate}. Não haverá retentativa.")
                 raise e
 
     def _align_dtm_to_ortho(self, dtm: Path, ortho: Path, aligned: Path) -> None:
@@ -284,25 +242,19 @@ class Build:
         return tile_count
 
     def run(self) -> None:
-        catalog = Client.open(self._catalog_url)
+        logger.info("Iniciando indexação de datasets")
 
-        logger.info(f"Iniciando indexação de datasets fonte da coleção: {self._collection}")
+        datasets = self._list_datasets()
 
-        self._list_datasets(catalog=catalog)
-
-        if len(self._datasets) < self._samples:
-            logger.info(f"A coleção {self._collection} não possui datasets suficientes...")
-            return
-
-        logger.info(f"Indexados {len(self._datasets)} datasets")
+        logger.info(f"Indexados {len(datasets)} datasets")
 
         self._prepare_assignments()
 
         count = 1
 
-        for pair in self._datasets:
-            dtm_candidate = get_dtm_candidate(pair)
-            ortho_candidate = get_ortho_candidate(pair)
+        for pair in datasets:
+            dtm_candidate = pair.dtm_url
+            ortho_candidate = pair.ortho_url
 
             if not dtm_candidate or not ortho_candidate:
                 logger.info(f"Par incompleto pulado. DTM: {dtm_candidate}, ORTHO: {ortho_candidate}")
@@ -321,8 +273,8 @@ class Build:
             download_sources.mkdir(exist_ok=True, parents=True)
             tiles_dir.mkdir(exist_ok=True, parents=True)
 
-            source_dtm_path = download_sources / dtm_candidate.filename
-            source_ortho_path = download_sources / ortho_candidate.filename
+            source_dtm_path = download_sources / os.path.basename(dtm_candidate)
+            source_ortho_path = download_sources / os.path.basename(ortho_candidate)
             source_dtm_aligned = download_sources / "DTM_aligned.tif"
 
             try:
