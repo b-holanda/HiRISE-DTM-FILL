@@ -10,7 +10,7 @@ from pystac_client import Client
 import numpy as np
 from osgeo import gdal
 
-from marsfill.utils import Logger, CandidateFile, get_dtm_candidate, get_ortho_candidate
+from marsfill.utils import Logger, CandidateType, CandidateFile, get_dtm_candidate, get_ortho_candidate
 
 gdal.UseExceptions()
 
@@ -52,19 +52,26 @@ class Build:
             for _, asset in item.assets.items():
                 filename = os.path.basename(asset.href)
 
-                if dtm_pattern.match(filename):
-                    filename = "DTM.tif"
-                elif ortho_pattern.match(filename):
-                    filename = "ORTHO.tif"
-                else:
+                if not dtm_pattern.match(filename) and not ortho_pattern.match(filename):
                     continue
 
                 response = requests.head(asset.href)
 
                 if (response.status_code == 200):
-                    pair.append(CandidateFile(filename=filename, href=asset.href))
+                    pair.append(CandidateFile(
+                        filename=filename, 
+                        href=asset.href,
+                        type=CandidateType.DTM if dtm_pattern.match(filename) else CandidateType.ORTHO
+                    ))
 
             if len(pair) < 2:
+                continue
+
+            types_in_pair = {c.type for c in pair}
+            if CandidateType.DTM not in types_in_pair or CandidateType.ORTHO not in types_in_pair:
+                logger.info(
+                    f"Pulando item {item.id}: não contém um par DTM/ORTHO válido. (Tipos encontrados: {types_in_pair})"
+                )
                 continue
 
             self._datasets.append(pair)
@@ -77,16 +84,15 @@ class Build:
     ) -> None:
         logger.info(f"Baixando: {os.path.basename(candidate.href)}...")
 
-        r = None
         for attempt in range(retries):
             try:
-                r = requests.get(candidate.href, stream=True, timeout=(15, 300))
-                r.raise_for_status()
+                with requests.get(candidate.href, stream=True, timeout=(15, 300)) as r:
+                    r.raise_for_status()
 
-                with open(out_dir, 'wb') as f:
-                    for chunk in r.iter_content(chunk_size=8192):
-                        f.write(chunk)
-                    
+                    with open(out_dir, 'wb') as f:
+                        for chunk in r.iter_content(chunk_size=8192):
+                            f.write(chunk)
+                        
                     logger.info(f"Download concluído para: {os.path.basename(candidate.href)}")
                     return
 
@@ -102,22 +108,20 @@ class Build:
                 if attempt + 1 == retries:
                     logger.info(f"Falha final no download após {retries} tentativas.")
                     raise e
-    
+        
                 sleep_time = backoff_factor * (2 ** attempt)
                 logger.info(f"Aguardando {sleep_time:.2f}s para tentar novamente...")
                 time.sleep(sleep_time)
 
             except requests.exceptions.HTTPError as e:
-                status = r.status_code if r is not None else 'unknown'
-
+                status = e.response.status_code
                 logger.info(f"Erro HTTP {status} para {candidate.href}. Não haverá retentativa.")
-                
                 raise e
 
     def _align_dtm_to_ortho(self, dtm: Path, ortho: Path, aligned: Path) -> None:
         logger.info("Gerando novo DTM alinhado com o arquivo orthoretificado")
 
-        ortho_dataset = gdal.Open(ortho)
+        ortho_dataset = gdal.Open(str(ortho))
         ortho_geo_transform = ortho_dataset.GetGeoTransform()
         ortho_geo_projection = ortho_dataset.GetProjection()
 
@@ -132,8 +136,8 @@ class Build:
         ortho_dataset = None
 
         gdal.Warp(
-            aligned,
-            dtm,
+            str(aligned),
+            str(dtm),
             format="GTiff",
             outputBounds=[x_min, y_min, x_max, y_max],
             xRes=x_res,
@@ -158,10 +162,6 @@ class Build:
         return ortho_normalized, dtm_normormalized
 
     def _prepare_assignments(self) -> None:
-        """
-        Calcula as contagens de 80/10/10 e cria uma lista
-        de atribuições de destino embaralhada.
-        """
         logger.info(
             f"Preparando {self._samples} atribuições (80% treino, 10% teste, 10% validação)"
         )
@@ -197,7 +197,7 @@ class Build:
         driver = gdal.GetDriverByName('GTiff')
 
         out_dataset = driver.Create(
-            out_path,
+            str(out_path), 
             normalized.shape[1],
             normalized.shape[0],
             1,
@@ -217,19 +217,22 @@ class Build:
         out_dataset = None
 
     def _process_tiles(self, dtm: Path, ortho: Path, out_dir: Path, count: int):
-        ortho_dataset = gdal.Open(ortho)
-        dtm_dataset = gdal.Open(dtm)
+        ortho_dataset = gdal.Open(str(ortho))
+        dtm_dataset = gdal.Open(str(dtm))
 
         ortho_arr = ortho_dataset.ReadAsArray()
         dtm_arr = dtm_dataset.ReadAsArray()
 
         base_geo_transform = ortho_dataset.GetGeoTransform()
         base_projection = ortho_dataset.GetProjection()
-
         nodata_val = dtm_dataset.GetRasterBand(1).GetNoDataValue()
+
+        ortho_dataset = None
+        dtm_dataset = None
+
         if nodata_val is None:
             nodata_val = -3.4028234663852886e+38 
- 
+    
         nodata_mask = (dtm_arr == nodata_val) | np.isnan(dtm_arr)
 
         height, width = ortho_arr.shape
@@ -301,6 +304,10 @@ class Build:
             dtm_candidate = get_dtm_candidate(pair)
             ortho_candidate = get_ortho_candidate(pair)
 
+            if not dtm_candidate or not ortho_candidate:
+                logger.info(f"Par incompleto pulado. DTM: {dtm_candidate}, ORTHO: {ortho_candidate}")
+                continue
+
             download_sources = self._download_dir / "sources" / str(count) 
 
             if not self._assignments:
@@ -329,6 +336,7 @@ class Build:
                 self._process_tiles(dtm=source_dtm_aligned, ortho=source_ortho_path, out_dir=tiles_dir, count=count)
 
             except Exception as e:
+                logger.error(f"Falha ao processar o par {count}: {e}", exc_info=True)
                 if tiles_dir.exists():
                     shutil.rmtree(tiles_dir)
                 raise e
