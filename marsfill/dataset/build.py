@@ -103,7 +103,7 @@ class Build:
             creationOptions=['COMPRESS=LZW', 'BIGTIFF=YES'],
         )
 
-        os.remove(dtm)
+        # os.remove(dtm)
 
     def _normalize_pair(self, ortho_tile_arr, dtm_tile_arr):
         """Normaliza um par de blocos (tiles) já lidos do disco."""
@@ -308,6 +308,6 @@ class Build:
                     shutil.rmtree(tiles_dir)
                 raise e
             finally:
-                if download_sources.exists():
-                    shutil.rmtree(download_sources)
+                # if download_sources.exists():
+                    # shutil.rmtree(download_sources)
                 count += 1
