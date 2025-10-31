@@ -2,14 +2,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import DataLoader
 from torch.amp.grad_scaler import GradScaler
 from torch.amp.autocast_mode import autocast
+from datetime import datetime
 
 from transformers import DPTForDepthEstimation, DPTImageProcessor
-from torchmetrics import StructuralSimilarityIndexMeasure
 from pathlib import Path
-from osgeo import gdal
 from enum import Enum
 import numpy as np
 import glob
@@ -38,6 +37,7 @@ class Train:
             epochs: int,
             weight_decay: float,
             data_dir: Path,
+            out_dir: Path,
             loss_weights: LossWights
      ) -> None:
 
@@ -50,7 +50,8 @@ class Train:
         self._batch_size = batch_size
         self._epochs = epochs
         self._data_dir = data_dir
-        self._model = DPTForDepthEstimation.from_pretrained(selected_model.value).to(device=self._device)
+        self._out_dir = out_dir
+        self._model = DPTForDepthEstimation.from_pretrained(selected_model.value).to(device=self._device) # type: ignore
         self._optmizer = optim.AdamW(self._model.parameters(), lr=learning_rate, weight_decay=weight_decay)
 
     def _train(self, loader: DataLoader):
@@ -149,3 +150,34 @@ class Train:
 
         train_loader = DataLoader(train_dataset, batch_size=self._batch_size, shuffle=True, num_workers=4, pin_memory=True)
         test_loader = DataLoader(test_dataset, batch_size=self._batch_size, shuffle=False, num_workers=4, pin_memory=True)
+
+        logger.info("Iniciando o loop de Fine-Tuning...")
+        best_vloss = float('inf')
+        epochs_no_improve = 0
+        PATIENCE = 5
+
+        for epoch in range(self._epochs):
+            logger.info(f"\n--- ÉPOCA {epoch+1}/{self._epochs} ---")
+
+            avg_loss = self._train(loader=train_loader)
+            avg_vloss = self._test(loader=test_loader)
+
+            logger.info(f"Fim da Época. Loss de Treino: {avg_loss:.4f} | Loss de Validação: {avg_vloss:.4f}")
+
+            if avg_loss < avg_vloss:
+                best_vloss = avg_loss
+                epochs_no_improve = 0
+                save_path: Path = self._out_dir / "marsfill_model.pth"
+
+                torch.save(self._model, save_path)
+
+                logger.info(f"Modelo salvo em {save_path} (Melhor Loss Val: {best_vloss:.4f})")
+            else:
+                epochs_no_improve += 1
+                logger.info(f"Sem melhoria na validação por {epochs_no_improve} épocas.")
+            
+            if epochs_no_improve >= PATIENCE:
+                logger.info(f"Parando o treinamento (Early Stopping) após {epoch+1} épocas.")
+                break
+        
+        logger.info("Treinamento concluído.")

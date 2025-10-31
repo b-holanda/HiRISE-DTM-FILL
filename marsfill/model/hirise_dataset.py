@@ -10,6 +10,8 @@ import numpy as np
 
 from marsfill.utils import Logger
 
+gdal.UseExceptions()
+
 logger = Logger()
 
 class HiRISeDataset(Dataset):

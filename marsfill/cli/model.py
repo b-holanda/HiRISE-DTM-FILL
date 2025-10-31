@@ -22,6 +22,7 @@ class Model:
             epochs: int = 50,
             weight_decay: float = 1e-2,
             data_dir: str = "datasets",
+            out_dir: str = "outputs",
             w_l1: float = 0.6,
             w_grad: float = 0.3,
             w_ssim: float = 0.1
@@ -38,6 +39,7 @@ class Model:
             epochs (int): Uma época é uma passagem completa por todos os dados de treinamento. Default 50
             weight_decay (float): Adiciona uma pequena penalidade ao otimizador. A IA é forçada a ser mais "eficiente". Ela só vai usar um peso grande se for absolutamente essencial para diminuir o valor de perda total, valores muito altos causam underfitting e valores muito baixos causam overfitting. Default 1e-2
             data_dir (str): Pasta raiz dos datasets. Default datasets
+            out_dir (str): Pasta raiz para salvar arquivos gerados. Default outputs
 
             [Pesos da função de perda combinada]
 
@@ -59,6 +61,7 @@ class Model:
         """
 
         dataset_dir = os.path.join(Path(__file__).parent.parent.parent, data_dir)
+        output_dir = os.path.join(Path(__file__).parent.parent.parent, out_dir)
 
         logger.info("Iniciando rotina de treinamento...")
         logger.info(f"selected_device={selected_device}")
@@ -68,6 +71,7 @@ class Model:
         logger.info(f"epochs={epochs}")
         logger.info(f"weight_decay={weight_decay}")
         logger.info(f"data_dir={data_dir}")
+        logger.info(f"output_dir={output_dir}")
         logger.info(f"w_l1={w_l1}")
         logger.info(f"w_grad={w_grad}")
         logger.info(f"w_ssim={w_ssim}")
@@ -80,5 +84,6 @@ class Model:
             epochs=epochs,
             weight_decay=weight_decay,
             data_dir=Path(dataset_dir),
+            out_dir=Path(output_dir),
             loss_weights=LossWights(l1=w_l1, gradenty=w_grad, ssim=w_ssim)
         ).run()

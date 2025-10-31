@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from typing_extensions import Self
 from dataclasses import dataclass
 
-from torchmetrics import StructuralSimilarityIndexMeasure
+from torchmetrics.image import StructuralSimilarityIndexMeasure
 
 @dataclass
 class LossWights:
