@@ -1,3 +1,4 @@
+import glob
 import os
 import logging
 from re import L
@@ -5,6 +6,7 @@ from re import L
 from attr import dataclass
 from pathlib import Path
 from enum import Enum
+from typing import Optional
 
 class CandidateType(Enum):
     DTM=1
@@ -68,3 +70,42 @@ def get_ortho_candidate(pair: list[CandidateFile]) -> CandidateFile | None:
 
 def get_candidate(pair: list[CandidateFile], type: CandidateType) -> CandidateFile | None:
     return next((item for item in pair if item.type == type), None)
+
+def load_dataset_files(path: Path, ortho: str, dtm: str) -> tuple[Optional[list[str]], Optional[list[str]]]:
+
+    logger = Logger()
+    ortho_files = sorted(glob.glob(os.path.join(path, ortho)))
+
+    if not ortho_files:
+        logger.error(f"Nenhum arquivo '{ortho}' encontrado em {path}")
+
+        return None, None
+
+    dtm_files = sorted(glob.glob(os.path.join(path, dtm)))
+
+    if not dtm_files:
+        logger.error(f"Nenhum arquivo '{dtm}' encontrado em {path}")
+
+        return None, None
+
+    return ortho_files, dtm_files
+
+def check_dataset_files(ortho_files: Optional[list[str]], dtm_files: Optional[list[str]]) -> tuple[list[str], list[str]]:
+    logger = Logger()
+
+    if not ortho_files:
+        raise Exception("arquivos de orthoimagens não encontrados")
+
+    if not dtm_files:
+        raise Exception("arquivos de DTM não encontrados")
+
+    for ortho_file, dtm_file in zip(ortho_files, dtm_files):
+        if not os.path.exists(dtm_file):
+            logger.error(f"Arquivo DTM correspondente {dtm_file} não encontrado para {ortho_file}")
+
+            raise FileNotFoundError(dtm_file)
+
+    return ortho_files, dtm_files
+
+def parse_str_list_to_path_list(paths: list[str]) -> list[Path]:
+    return list(map(lambda path: Path(path), paths))
