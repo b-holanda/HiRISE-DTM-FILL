@@ -1,18 +1,13 @@
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from torch.amp.grad_scaler import GradScaler
 from torch.amp.autocast_mode import autocast
-from datetime import datetime
 
 from transformers import DPTForDepthEstimation, DPTImageProcessor
 from pathlib import Path
 from enum import Enum
-import numpy as np
-import glob
-import os
 
 from marsfill.model.combined_loss import LossWights, CombinedLoss
 from marsfill.model.hirise_dataset import HiRISeDataset
@@ -88,7 +83,7 @@ class Train:
 
         return running_loss / len(loader)
 
-    def _test(self, loader: DataLoader):
+    def _validation(self, loader: DataLoader):
         running_vloss = 0.0
 
         self._model.eval()
@@ -117,10 +112,10 @@ class Train:
     def run(self) -> None:
         logger.info(f"Iniciando treinamento no dispositivo: {self._device}")
 
-        logger.info("Carregando datasets de treinamento e teste...")
+        logger.info("Carregando datasets de treinamento e validatione...")
 
         train_dir = self._data_dir / "train"
-        test_dir = self._data_dir / "test"
+        validation_dir = self._data_dir / "validation"
 
         train_ortho_files, train_dtm_files = load_dataset_files(
             path=train_dir, 
@@ -128,48 +123,52 @@ class Train:
             dtm="DTM_*.tif"
         )
 
-        test_ortho_files, test_dtm_files = load_dataset_files(
-            path=test_dir, 
+        validation_ortho_files, validation_dtm_files = load_dataset_files(
+            path=validation_dir, 
             ortho="ORTHO_*.tif", 
             dtm="DTM_*.tif"
         )
 
         train_ortho_files, train_dtm_files = check_dataset_files(ortho_files=train_ortho_files, dtm_files=train_dtm_files)
-        test_ortho_files, test_dtm_files =  check_dataset_files(ortho_files=test_ortho_files, dtm_files=test_dtm_files)
+        validation_ortho_files, validation_dtm_files =  check_dataset_files(ortho_files=validation_ortho_files, dtm_files=validation_dtm_files)
 
         train_dataset = HiRISeDataset(
             ortho_files=parse_str_list_to_path_list(train_ortho_files), 
             dtm_files=parse_str_list_to_path_list(train_dtm_files), 
             processor=self._processor
         )
-        test_dataset = HiRISeDataset(
-            ortho_files=parse_str_list_to_path_list(test_ortho_files), 
-            dtm_files=parse_str_list_to_path_list(test_dtm_files), 
+        validation_dataset = HiRISeDataset(
+            ortho_files=parse_str_list_to_path_list(validation_ortho_files), 
+            dtm_files=parse_str_list_to_path_list(validation_dtm_files), 
             processor=self._processor
         )
 
         train_loader = DataLoader(train_dataset, batch_size=self._batch_size, shuffle=True, num_workers=4, pin_memory=True)
-        test_loader = DataLoader(test_dataset, batch_size=self._batch_size, shuffle=False, num_workers=4, pin_memory=True)
+        validation_loader = DataLoader(validation_dataset, batch_size=self._batch_size, shuffle=False, num_workers=4, pin_memory=True)
 
         logger.info("Iniciando o loop de Fine-Tuning...")
         best_vloss = float('inf')
         epochs_no_improve = 0
         PATIENCE = 5
 
+        self._out_dir.mkdir(exist_ok=True, parents=True)
+
         for epoch in range(self._epochs):
             logger.info(f"\n--- ÉPOCA {epoch+1}/{self._epochs} ---")
 
             avg_loss = self._train(loader=train_loader)
-            avg_vloss = self._test(loader=test_loader)
+            avg_vloss = self._validation(loader=validation_loader)
 
             logger.info(f"Fim da Época. Loss de Treino: {avg_loss:.4f} | Loss de Validação: {avg_vloss:.4f}")
 
-            if avg_loss < avg_vloss:
-                best_vloss = avg_loss
+            if avg_loss < best_vloss:
+                best_vloss = avg_vloss
                 epochs_no_improve = 0
                 save_path: Path = self._out_dir / "marsfill_model.pth"
 
-                torch.save(self._model, save_path)
+                save_path.touch()
+
+                torch.save(self._model.state_dict(), save_path)
 
                 logger.info(f"Modelo salvo em {save_path} (Melhor Loss Val: {best_vloss:.4f})")
             else:

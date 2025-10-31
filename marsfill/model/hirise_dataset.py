@@ -41,7 +41,7 @@ class HiRISeDataset(Dataset):
 
             inputs = self._processor(ortho_rgb_array, return_tensors="pt")
 
-            pixel_values = inputs["prixel_values"].squeeze(0)
+            pixel_values = inputs["pixel_values"].squeeze(0)
 
             dtm_tensor = torch.from_numpy(dtm_array).float().unsqueeze(0)
 
