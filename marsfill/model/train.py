@@ -50,10 +50,7 @@ class Train:
         self._batch_size = batch_size
         self._epochs = epochs
         self._data_dir = data_dir
-
-        model = DPTForDepthEstimation.from_pretrained(selected_model.value)
-
-        self._model = model.to(self=model, device=self._device)
+        self._model = DPTForDepthEstimation.from_pretrained(selected_model.value).to(device=self._device)
         self._optmizer = optim.AdamW(self._model.parameters(), lr=learning_rate, weight_decay=weight_decay)
 
     def _train(self, loader: DataLoader):
