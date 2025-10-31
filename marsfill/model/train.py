@@ -39,7 +39,7 @@ class Train:
         logger.info(f"Inicializando modelo: {selected_model.value}...")
 
         self._device = torch.device(selected_device.value)
-        self._processor = DPTImageProcessor.from_pretrained(selected_model.value)
+        self._processor = DPTImageProcessor.from_pretrained(selected_model.value, do_rescale=False)
         self._loss_calculator = CombinedLoss(lossWeights=loss_weights, device=self._device).to(self._device)
         self._scaler = GradScaler(selected_device.value)
         self._batch_size = batch_size
