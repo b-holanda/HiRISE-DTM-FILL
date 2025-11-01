@@ -1,3 +1,4 @@
+import os
 import torch
 import torch.nn.functional as F
 import torch.optim as optim
@@ -31,8 +32,6 @@ class Train:
             learning_rate: float,
             epochs: int,
             weight_decay: float,
-            data_dir: Path,
-            out_dir: Path,
             loss_weights: LossWights
      ) -> None:
 
@@ -44,8 +43,6 @@ class Train:
         self._scaler = GradScaler(selected_device.value)
         self._batch_size = batch_size
         self._epochs = epochs
-        self._data_dir = data_dir
-        self._out_dir = out_dir
         self._model = DPTForDepthEstimation.from_pretrained(selected_model.value).to(device=self._device) # type: ignore
         self._optmizer = optim.AdamW(self._model.parameters(), lr=learning_rate, weight_decay=weight_decay)
 
@@ -114,8 +111,8 @@ class Train:
 
         logger.info("Carregando datasets de treinamento e validatione...")
 
-        train_dir = self._data_dir / "train"
-        validation_dir = self._data_dir / "validation"
+        train_dir = Path(os.environ.get('SM_CHANNEL_TRAIN', 'datasets/train'))
+        validation_dir = Path(os.environ.get('SM_CHANNEL_VALIDATION', 'datasets/validation'))
 
         train_ortho_files, train_dtm_files = load_dataset_files(
             path=train_dir, 
@@ -151,8 +148,6 @@ class Train:
         epochs_no_improve = 0
         PATIENCE = 5
 
-        self._out_dir.mkdir(exist_ok=True, parents=True)
-
         for epoch in range(self._epochs):
             logger.info(f"\n--- ÉPOCA {epoch+1}/{self._epochs} ---")
 
@@ -164,13 +159,10 @@ class Train:
             if avg_loss < best_vloss:
                 best_vloss = avg_vloss
                 epochs_no_improve = 0
-                save_path: Path = self._out_dir / "marsfill_model.pth"
 
-                save_path.touch()
+                torch.save(self._model.state_dict(), "/opt/ml/model/marsfill_model.pth")
 
-                torch.save(self._model.state_dict(), save_path)
-
-                logger.info(f"Modelo salvo em {save_path} (Melhor Loss Val: {best_vloss:.4f})")
+                logger.info(f"Modelo salvo em /opt/ml/model/marsfill_model.pth (Melhor Loss Val: {best_vloss:.4f})")
             else:
                 epochs_no_improve += 1
                 logger.info(f"Sem melhoria na validação por {epochs_no_improve} épocas.")

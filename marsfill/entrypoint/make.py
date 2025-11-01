@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 from marsfill.dataset.build import Build
 from marsfill.utils import Logger
+from marsfill.utils.profiler import get_profile_for_hardware
 
 logger = Logger()
 
@@ -12,14 +13,7 @@ class Dataset:
     def __init__(self):
         pass
 
-    def build(
-            self, 
-            samples: int = 100,
-            output: str = "datasets",
-            urls_to_scan: list[str] = ["https://www.uahirise.org/PDS/DTM/PSP/", "https://www.uahirise.org/PDS/DTM/ESP/"],
-            tile_size: int = 512,
-            stride: int = 256,
-        ) -> None:
+    def build( self) -> None:
         """Constrói o dataset de treinamento e teste e salva na pasta especificada.
 
         Args:
@@ -29,6 +23,18 @@ class Dataset:
             tile_size (int): tamanho do recorte. default 512
             stride (int): passo da normalização. default 256
         """
+
+        profile = get_profile_for_hardware()
+
+        if not profile:
+            logger.error("Nenhum perfil compatível encontrado para o hardware do sistema.")
+            return
+
+        samples: int = profile["make"].get("samples", 100)
+        output: str = profile["make"].get("output", "datasets")
+        urls_to_scan: list[str] = profile["make"].get("urls_to_scan", ["https://www.uahirise.org/PDS/DTM/PSP/", "https://www.uahirise.org/PDS/DTM/ESP/"])
+        tile_size: int = profile["make"].get("tile_size", 512)
+        stride: int = profile["make"].get("stride", 256)
 
         download_dir = os.path.join(Path(__file__).parent.parent.parent, output)
 
@@ -46,3 +52,8 @@ class Dataset:
             tile_size=tile_size,
             stride=stride,
         ).run()
+
+if __name__ == "__main__":
+    dataset = Dataset()
+
+    dataset.build()

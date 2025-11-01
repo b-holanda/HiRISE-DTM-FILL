@@ -4,6 +4,7 @@ from pathlib import Path
 from marsfill.model.combined_loss import LossWights
 from marsfill.model.train import AvaliabeDevices, AvaliableModels, Train
 from marsfill.utils import Logger
+from marsfill.utils.profiler import get_profile_for_hardware
 
 logger = Logger()
 
@@ -13,20 +14,7 @@ class Model:
     def __init__(self):
         pass
 
-    def train(
-            self,
-            selected_device: AvaliabeDevices = AvaliabeDevices.GPU,
-            selected_model: AvaliableModels = AvaliableModels.INTEL_DPT_LARGE,
-            batch_size: int = 4,
-            learning_rate: float = 1e-5,
-            epochs: int = 50,
-            weight_decay: float = 1e-2,
-            data_dir: str = "datasets",
-            out_dir: str = "outputs",
-            w_l1: float = 0.6,
-            w_grad: float = 0.3,
-            w_ssim: float = 0.1
-    ):
+    def train(self):
         """Constrói o dataset de treinamento e teste e salva na pasta especificada.
 
         Args:
@@ -59,9 +47,21 @@ class Model:
             Diagnóstico: W_L1 está muito baixo. A IA está focando só na forma, não no valor.
             Cura: Aumente W_L1.
         """
+        profile = get_profile_for_hardware()
 
-        dataset_dir = os.path.join(Path(__file__).parent.parent.parent, data_dir)
-        output_dir = os.path.join(Path(__file__).parent.parent.parent, out_dir)
+        if not profile:
+            logger.error("Nenhum perfil compatível encontrado para o hardware do sistema.")
+            return
+        
+        selected_device: AvaliabeDevices = AvaliabeDevices.GPU if profile["train"].get("selected_device", "gpu").lower() == "gpu" else AvaliabeDevices.CPU
+        selected_model: AvaliableModels = AvaliableModels.INTEL_DPT_LARGE
+        batch_size: int = profile["train"].get("batch_size", 8)
+        learning_rate: float = profile["train"].get("learning_rate", 0.00001)
+        epochs: int = profile["train"].get("epochs", 50)
+        weight_decay: float = profile["train"].get("weight_decay", 0.01)
+        w_l1: float = 0.6
+        w_grad: float = 0.3
+        w_ssim: float = 0.1
 
         logger.info("Iniciando rotina de treinamento...")
         logger.info(f"selected_device={selected_device}")
@@ -70,8 +70,6 @@ class Model:
         logger.info(f"learning_rate={learning_rate}")
         logger.info(f"epochs={epochs}")
         logger.info(f"weight_decay={weight_decay}")
-        logger.info(f"data_dir={data_dir}")
-        logger.info(f"output_dir={output_dir}")
         logger.info(f"w_l1={w_l1}")
         logger.info(f"w_grad={w_grad}")
         logger.info(f"w_ssim={w_ssim}")
@@ -83,7 +81,10 @@ class Model:
             learning_rate=learning_rate,
             epochs=epochs,
             weight_decay=weight_decay,
-            data_dir=Path(dataset_dir),
-            out_dir=Path(output_dir),
             loss_weights=LossWights(l1=w_l1, gradenty=w_grad, ssim=w_ssim)
         ).run()
+
+if __name__ == "__main__":
+    model = Model()
+
+    model.train()

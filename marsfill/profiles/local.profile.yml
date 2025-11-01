@@ -1,0 +1,29 @@
+hardware:
+  ram: 16 GB
+  disk: 1 TB
+  gpu:
+    platform: NVIDIA
+    memory: 16 GB
+  cpu:
+    cores: 2
+
+make:
+  urls_to_scan:
+    - "https://www.uahirise.org/PDS/DTM/PSP/"
+    - "https://www.uahirise.org/PDS/DTM/ESP/"
+  samples: 100
+  output: "datasets"
+  tile_size: 512
+  stride: 256
+
+train:
+  selected_device: gpu
+  threads: 4
+  selected_model: Intel/dpt-large
+  batch_size: 4
+  learning_rate: 0.00001
+  epochs: 50
+  weight_decay: 0.01
+  w_l1: 0.6
+  w_grad: 0.3
+  w_ssim: 0.1
