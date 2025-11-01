@@ -5,6 +5,9 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from torch.amp.grad_scaler import GradScaler
 from torch.amp.autocast_mode import autocast
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data.distributed import DistributedSampler
 
 from transformers import DPTForDepthEstimation, DPTImageProcessor
 from pathlib import Path
@@ -26,29 +29,60 @@ class AvaliableModels(Enum):
 class Train:
     def __init__(
             self, 
-            selected_device: AvaliabeDevices, 
             selected_model: AvaliableModels,
             batch_size: int,
             learning_rate: float,
             epochs: int,
             weight_decay: float,
             loss_weights: LossWights
-     ) -> None:
+       ) -> None:
+        self._setup_device_and_ddp()
 
         logger.info(f"Inicializando modelo: {selected_model.value}...")
 
-        self._device = torch.device(selected_device.value)
         self._processor = DPTImageProcessor.from_pretrained(selected_model.value, do_rescale=False)
+ 
         self._loss_calculator = CombinedLoss(lossWeights=loss_weights, device=self._device).to(self._device)
-        self._scaler = GradScaler(selected_device.value)
+        self._scaler = GradScaler("cuda")
         self._batch_size = batch_size
         self._epochs = epochs
-        self._model = DPTForDepthEstimation.from_pretrained(selected_model.value).to(device=self._device) # type: ignore
-        self._optmizer = optim.AdamW(self._model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+        
+        model_raw = DPTForDepthEstimation.from_pretrained(selected_model.value).to(device=self._device) # type: ignore
+        self._optmizer = optim.AdamW(model_raw.parameters(), lr=learning_rate, weight_decay=weight_decay)
+
+        if self._is_ddp:
+            self._model = DDP(model_raw, device_ids=[self._local_rank])
+        else:
+            self._model = model_raw
+
+    def _setup_device_and_ddp(self) -> None:
+        """Detecta o ambiente e configura DDP (Multi-GPU) ou GPU Única."""
+        if 'WORLD_SIZE' in os.environ:
+            self._is_ddp = True
+            self._world_size = int(os.environ['WORLD_SIZE'])
+            self._rank = int(os.environ['RANK'])
+            self._local_rank = int(os.environ['LOCAL_RANK'])
+            self._device = torch.device(f"cuda:{self._local_rank}")
+            self._is_master = (self._rank == 0)
+            
+            dist.init_process_group(backend='nccl')
+            logger.info(f"Modo DDP Ativado: Rank {self._rank}/{self._world_size} na GPU {self._local_rank}")
+        else:
+            self._is_ddp = False
+            self._world_size = 1
+            self._rank = 0
+            self._local_rank = 0
+            self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            self._is_master = True
+            logger.info(f"Modo GPU Única Ativado. Dispositivo: {self._device}")
+    
+    def _cleanup_ddp(self) -> None:
+        """Encerra o grupo de processos DDP."""
+        if self._is_ddp:
+            dist.destroy_process_group()
 
     def _train(self, loader: DataLoader):
         running_loss = 0.0
-
         self._model.train()
 
         for i, (pixel_values, dtm_targets) in enumerate(loader):
@@ -69,20 +103,20 @@ class Train:
                 )
 
                 total_loss, l1_loss, gradiend_loss, ssim_loss = self._loss_calculator(predicted_resized, dtm_targets)
+            
             self._scaler.scale(total_loss).backward()
             self._scaler.step(optimizer=self._optmizer)
             self._scaler.update()
 
             running_loss += total_loss.item()
 
-            if (i + 1) % 50 == 0:
+            if (i + 1) % 50 == 0 and self._is_master:
                 logger.info(f"Batch {i + 1}/{len(loader)}, Loss: {total_loss.item():.4f}, L1: {l1_loss.item():.4f}, Gradent: {gradiend_loss.item():.4f}, SSIM: {ssim_loss.item():.4f}")
 
         return running_loss / len(loader)
 
     def _validation(self, loader: DataLoader):
         running_vloss = 0.0
-
         self._model.eval()
 
         with torch.no_grad():
@@ -107,9 +141,9 @@ class Train:
         return running_vloss / len(loader)
 
     def run(self) -> None:
-        logger.info(f"Iniciando treinamento no dispositivo: {self._device}")
-
-        logger.info("Carregando datasets de treinamento e validatione...")
+        if self._is_master:
+            logger.info(f"Iniciando treinamento no dispositivo: {self._device}")
+            logger.info("Carregando datasets de treinamento e validation...")
 
         train_dir = Path(os.environ.get('SM_CHANNEL_TRAIN', 'datasets/train'))
         validation_dir = Path(os.environ.get('SM_CHANNEL_VALIDATION', 'datasets/validation'))
@@ -119,7 +153,6 @@ class Train:
             ortho="ORTHO_*.tif", 
             dtm="DTM_*.tif"
         )
-
         validation_ortho_files, validation_dtm_files = load_dataset_files(
             path=validation_dir, 
             ortho="ORTHO_*.tif", 
@@ -140,35 +173,85 @@ class Train:
             processor=self._processor
         )
 
-        train_loader = DataLoader(train_dataset, batch_size=self._batch_size, shuffle=True, num_workers=4, pin_memory=True)
-        validation_loader = DataLoader(validation_dataset, batch_size=self._batch_size, shuffle=False, num_workers=4, pin_memory=True)
+        train_sampler = None
+        validation_sampler = None
+        train_shuffle = True
 
-        logger.info("Iniciando o loop de Fine-Tuning...")
+        if self._is_ddp:
+            train_sampler = DistributedSampler(
+                train_dataset, num_replicas=self._world_size, rank=self._rank, shuffle=True
+            )
+            validation_sampler = DistributedSampler(
+                validation_dataset, num_replicas=self._world_size, rank=self._rank, shuffle=False
+            )
+            train_shuffle = False
+
+        train_loader = DataLoader(
+            train_dataset, 
+            batch_size=self._batch_size, 
+            shuffle=train_shuffle, # Flexível
+            num_workers=4, 
+            pin_memory=True,
+            sampler=train_sampler
+        )
+        validation_loader = DataLoader(
+            validation_dataset, 
+            batch_size=self._batch_size, 
+            shuffle=False, 
+            num_workers=4, 
+            pin_memory=True,
+            sampler=validation_sampler
+        )
+
+        if self._is_master:
+            logger.info("Iniciando o loop de Fine-Tuning...")
+        
         best_vloss = float('inf')
         epochs_no_improve = 0
         PATIENCE = 5
 
         for epoch in range(self._epochs):
-            logger.info(f"\n--- ÉPOCA {epoch+1}/{self._epochs} ---")
+            if self._is_ddp and train_sampler is not None:
+                train_sampler.set_epoch(epoch)
+
+            if self._is_master:
+                logger.info(f"\n--- ÉPOCA {epoch+1}/{self._epochs} ---")
 
             avg_loss = self._train(loader=train_loader)
             avg_vloss = self._validation(loader=validation_loader)
 
-            logger.info(f"Fim da Época. Loss de Treino: {avg_loss:.4f} | Loss de Validação: {avg_vloss:.4f}")
+            if self._is_master:
+                logger.info(f"Fim da Época. Loss de Treino: {avg_loss:.4f} | Loss de Validação: {avg_vloss:.4f}")
 
-            if avg_loss < best_vloss:
-                best_vloss = avg_vloss
-                epochs_no_improve = 0
+                if avg_vloss < best_vloss:
+                    logger.info(f"Perda de validação melhorou de {best_vloss:.4f} para {avg_vloss:.4f}.")
+                    
+                    best_vloss = avg_vloss
+                    epochs_no_improve = 0
 
-                torch.save(self._model.state_dict(), "/opt/ml/model/marsfill_model.pth")
+                    default_output_path = Path(__file__).parent.parent.parent / "outputs"
+                    output_dir = Path(os.environ.get('SM_MODEL_DIR', default_output_path))
 
-                logger.info(f"Modelo salvo em /opt/ml/model/marsfill_model.pth (Melhor Loss Val: {best_vloss:.4f})")
-            else:
-                epochs_no_improve += 1
-                logger.info(f"Sem melhoria na validação por {epochs_no_improve} épocas.")
-            
-            if epochs_no_improve >= PATIENCE:
-                logger.info(f"Parando o treinamento (Early Stopping) após {epoch+1} épocas.")
-                break
+                    model_save_path = output_dir / "marsfill_model.pth"
+
+                    model_to_save = self._model.module if self._is_ddp else self._model
+                    
+                    torch.save(model_to_save.state_dict(), model_save_path) 
+                    
+                    logger.info(f"Modelo salvo em {model_save_path}")
+
+                else:
+                    epochs_no_improve += 1
+
+                    logger.info(f"Sem melhoria na validação por {epochs_no_improve} épocas.")
+                
+                if epochs_no_improve >= PATIENCE:
+                    logger.info(f"Parando o treinamento (Early Stopping) após {epoch+1} épocas.")
+
+                    break 
         
-        logger.info("Treinamento concluído.")
+        if self._is_master:
+            logger.info("Treinamento concluído.")
+
+        if self._is_ddp:
+            self._cleanup_ddp()
