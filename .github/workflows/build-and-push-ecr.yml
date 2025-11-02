@@ -1,0 +1,61 @@
+name: Build and Push Docker Image to ECR
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: marsfill-training-env
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Define Image URI and Tags
+        id: define-image-tags
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          echo "IMAGE_URI_SHA=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+          echo "IMAGE_URI_LATEST=$ECR_REGISTRY/$ECR_REPOSITORY:latest" >> $GITHUB_OUTPUT
+
+      - name: Build, tag, and push image to ECR
+        env:
+          IMAGE_URI_SHA: ${{ steps.define-image-tags.outputs.IMAGE_URI_SHA }}
+          IMAGE_URI_LATEST: ${{ steps.define-image-tags.outputs.IMAGE_URI_LATEST }}
+        run: |
+          # Constrói a imagem
+          echo "Construindo a imagem: $IMAGE_URI_SHA"
+          docker build -t $IMAGE_URI_SHA -f Dockerfile .
+          
+          # Adiciona a tag 'latest' à imagem recém-construída
+          echo "Adicionando tag 'latest': $IMAGE_URI_LATEST"
+          docker tag $IMAGE_URI_SHA $IMAGE_URI_LATEST
+          
+          # Envia a tag SHA
+          echo "Enviando tag SHA..."
+          docker push $IMAGE_URI_SHA
+          
+          # Envia a tag 'latest'
+          echo "Enviando tag 'latest'..."
+          docker push $IMAGE_URI_LATEST
