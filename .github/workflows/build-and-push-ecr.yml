@@ -30,7 +30,7 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
         with:
-          registry-ids: 763104351884
+          registries: 763104351884, 109762776171
 
       - name: Define Image URI and Tags
         id: define-image-tags
