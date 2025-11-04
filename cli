@@ -1,0 +1,19 @@
+#!/bin/bash
+
+# Detecta número de GPUs disponíveis
+NUM_GPUS=$(nvidia-smi --list-gpus | wc -l)
+
+# Se tiver mais de 1 GPU, usa torchrun
+if [ $NUM_GPUS -gt 1 ]; then
+    echo "🚀 Treinando com $NUM_GPUS GPUs (DDP)"
+    torchrun \
+        --nproc_per_node=$NUM_GPUS \
+        --nnodes=1 \
+        --node_rank=0 \
+        --master_addr=localhost \
+        --master_port=29500 \
+        -m marsfill "$@"
+else
+    echo "🖥️  Treinando com 1 GPU"
+    python -m marsfill "$@"
+fi

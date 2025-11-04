@@ -1,0 +1,26 @@
+name: marsfill-env
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - numpy
+  - pandas
+  - scipy
+  - scikit-learn
+  - gdal
+  - pillow
+  - tqdm
+  - pyyaml
+  - blas=*=openblas
+  - nomkl
+  - pip
+  - pip:
+      - torch==2.5.1 --index-url https://download.pytorch.org/whl/cu124
+      - torchvision==0.20.1 --index-url https://download.pytorch.org/whl/cu124
+      - torchmetrics
+      - transformers
+      - datasets
+      - fire
+      - nvidia-ml-py
+      - bs4

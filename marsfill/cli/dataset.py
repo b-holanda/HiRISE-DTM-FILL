@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 from marsfill.dataset.build import Build
 from marsfill.utils import Logger
-from marsfill.utils.profiler import get_profile_for_hardware
+from marsfill.utils.profiler import get_profile
 
 logger = Logger()
 
@@ -13,7 +13,7 @@ class Dataset:
     def __init__(self):
         pass
 
-    def build( self) -> None:
+    def build(self, p: str = "prod") -> None:
         """Constrói o dataset de treinamento e teste e salva na pasta especificada.
 
         Args:
@@ -24,7 +24,7 @@ class Dataset:
             stride (int): passo da normalização. default 256
         """
 
-        profile = get_profile_for_hardware()
+        profile = get_profile(p)
 
         if not profile:
             logger.error("Nenhum perfil compatível encontrado para o hardware do sistema.")
@@ -52,8 +52,3 @@ class Dataset:
             tile_size=tile_size,
             stride=stride,
         ).run()
-
-if __name__ == "__main__":
-    dataset = Dataset()
-
-    dataset.build()

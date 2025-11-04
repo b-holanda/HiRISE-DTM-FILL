@@ -4,7 +4,7 @@ from pathlib import Path
 from marsfill.model.combined_loss import LossWights
 from marsfill.model.train import AvaliabeDevices, AvaliableModels, Train
 from marsfill.utils import Logger
-from marsfill.utils.profiler import get_profile_for_hardware
+from marsfill.utils.profiler import get_profile
 
 logger = Logger()
 
@@ -14,7 +14,7 @@ class Model:
     def __init__(self):
         pass
 
-    def train(self):
+    def train(self, p: str = "prod"):
         """Constrói o dataset de treinamento e teste e salva na pasta especificada.
 
         Args:
@@ -47,13 +47,12 @@ class Model:
             Diagnóstico: W_L1 está muito baixo. A IA está focando só na forma, não no valor.
             Cura: Aumente W_L1.
         """
-        profile = get_profile_for_hardware()
+        profile = get_profile(p)
 
         if not profile:
             logger.error("Nenhum perfil compatível encontrado para o hardware do sistema.")
             return
-        
-        selected_device: AvaliabeDevices = AvaliabeDevices.GPU if profile["train"].get("selected_device", "gpu").lower() == "gpu" else AvaliabeDevices.CPU
+
         selected_model: AvaliableModels = AvaliableModels.INTEL_DPT_LARGE
         batch_size: int = profile["train"].get("batch_size", 8)
         learning_rate: float = profile["train"].get("learning_rate", 0.00001)
@@ -64,7 +63,6 @@ class Model:
         w_ssim: float = 0.1
 
         logger.info("Iniciando rotina de treinamento...")
-        logger.info(f"selected_device={selected_device}")
         logger.info(f"selected_model={selected_model}")
         logger.info(f"batch_size={batch_size}")
         logger.info(f"learning_rate={learning_rate}")
@@ -75,7 +73,6 @@ class Model:
         logger.info(f"w_ssim={w_ssim}")
 
         Train(
-            selected_device=selected_device,
             selected_model=selected_model,
             batch_size=batch_size,
             learning_rate=learning_rate,
@@ -83,8 +80,3 @@ class Model:
             weight_decay=weight_decay,
             loss_weights=LossWights(l1=w_l1, gradenty=w_grad, ssim=w_ssim)
         ).run()
-
-if __name__ == "__main__":
-    model = Model()
-
-    model.train()

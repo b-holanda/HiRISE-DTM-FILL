@@ -25,6 +25,7 @@ conda activate marsfill-env
 conda install -c conda-forge libgdal-jp2openjpeg
 
 pip install -e .
+
 ```
 
 ## Uso
