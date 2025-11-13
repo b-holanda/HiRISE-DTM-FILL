@@ -33,7 +33,7 @@ class Logger:
  
         self._logger = logging.getLogger("marsfill")
 
-        self._logger.setLevel(logging.INFO)
+        self._logger.setLevel(logging.DEBUG)
         
         console_hadler = logging.StreamHandler()
         formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
