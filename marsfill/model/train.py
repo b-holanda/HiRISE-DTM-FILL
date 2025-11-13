@@ -60,7 +60,7 @@ class Train:
         self._optmizer = optim.AdamW(model_raw.parameters(), lr=learning_rate, weight_decay=weight_decay)
 
         if self._is_ddp:
-            self._model = DDP(model_raw, device_ids=[self._local_rank], find_unused_parameters=False)
+            self._model = DDP(model_raw, device_ids=[self._local_rank], find_unused_parameters=True)
         else:
             self._model = model_raw
 
@@ -270,6 +270,9 @@ class Train:
                 if epochs_no_improve >= PATIENCE:
                     logger.info(f"Parando o treinamento (Early Stopping) após {epoch+1} épocas.")
                     break
+        
+        if self._is_ddp and dist.is_initialized():
+            dist.destroy_process_group()
 
         if self._is_master:
             logger.info("Treinamento concluído.")
