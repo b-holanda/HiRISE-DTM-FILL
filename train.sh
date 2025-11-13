@@ -14,8 +14,8 @@ if [ $NUM_GPUS -gt 1 ]; then
         --node_rank=0 \
         --master_addr=localhost \
         --master_port=29500 \
-        cli/train.py
+        marsfill/cli/train.py
 else
     echo "🖥️  Treinando com 1 GPU"
-    python cli/train.py
+    python marsfill/cli/train.py
 fi
