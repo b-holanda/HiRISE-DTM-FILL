@@ -10,6 +10,7 @@ NUM_GPUS=$(nvidia-smi --list-gpus 2>/dev/null | wc -l)
 export SM_CHANNEL_TRAIN=/dataset/train
 export SM_CHANNEL_VALIDATION=/dataset/validation
 export SM_MODEL_DIR=/dataset/model
+export TORCH_DISTRIBUTED_DEBUG=DETAIL
 
 if [ $NUM_GPUS -gt 1 ]; then
     echo "🚀 Treinando com $NUM_GPUS GPUs (DDP)"
