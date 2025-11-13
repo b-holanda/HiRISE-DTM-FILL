@@ -32,22 +32,33 @@ class Train:
             learning_rate: float,
             epochs: int,
             weight_decay: float,
-            loss_weights: LossWights
+            loss_weights: LossWights,
+            # Adicione estes parâmetros
+            is_distributed: bool = False,
+            local_rank: int = 0,
+            rank: int = 0,
+            world_size: int = 1
         ) -> None:
+
+        self._is_ddp_external = is_distributed
+        self._external_local_rank = local_rank
+        self._external_rank = rank
+        self._external_world_size = world_size
+
         self._setup_device_and_ddp()
-        
+
         if self._is_master:
             logger.info(f"Inicializando modelo: {selected_model.value}...")
-        
+
         self._processor = DPTImageProcessor.from_pretrained(selected_model.value, do_rescale=False)
         self._loss_calculator = CombinedLoss(lossWeights=loss_weights, device=self._device).to(self._device)
         self._scaler = GradScaler("cuda") if self._device.type == "cuda" else GradScaler("cpu")
         self._batch_size = batch_size
         self._epochs = epochs
-        
+
         model_raw = DPTForDepthEstimation.from_pretrained(selected_model.value).to(device=self._device) # type: ignore
         self._optmizer = optim.AdamW(model_raw.parameters(), lr=learning_rate, weight_decay=weight_decay)
-        
+
         if self._is_ddp:
             self._model = DDP(model_raw, device_ids=[self._local_rank], find_unused_parameters=False)
         else:
@@ -55,8 +66,24 @@ class Train:
 
     def _setup_device_and_ddp(self) -> None:
         """Detecta o ambiente e configura DDP (Multi-GPU) ou GPU Única."""
-        # Verifica se está em ambiente DDP (torchrun/torch.distributed.launch)
-        if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
+
+        if hasattr(self, '_is_ddp_external') and self._is_ddp_external:
+            self._is_ddp = True
+            self._world_size = self._external_world_size
+            self._rank = self._external_rank
+            self._local_rank = self._external_local_rank
+
+            if not torch.cuda.is_available():
+                raise RuntimeError("DDP requer CUDA, mas CUDA não está disponível")
+
+            self._device = torch.device(f"cuda:{self._local_rank}")
+            torch.cuda.set_device(self._local_rank)
+            self._is_master = (self._rank == 0)
+
+            if self._is_master:
+                logger.info(f"Modo DDP Ativado: Rank {self._rank}/{self._world_size} na GPU {self._local_rank}")
+
+        elif 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
             self._is_ddp = True
             self._world_size = int(os.environ['WORLD_SIZE'])
             self._rank = int(os.environ['RANK'])
@@ -64,29 +91,24 @@ class Train:
 
             if not torch.cuda.is_available():
                 raise RuntimeError("DDP requer CUDA, mas CUDA não está disponível")
-            
+
             self._device = torch.device(f"cuda:{self._local_rank}")
             torch.cuda.set_device(self._local_rank)
             self._is_master = (self._rank == 0)
-            
+
             if not dist.is_initialized():
                 dist.init_process_group(backend='nccl')
 
             if self._is_master:
                 logger.info(f"Modo DDP Ativado: Rank {self._rank}/{self._world_size} na GPU {self._local_rank}")
-        else:
-            self._is_ddp = False
-            self._world_size = 1
-            self._rank = 0
-            self._local_rank = 0
-            self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            self._is_master = True
-            logger.info(f"Modo Single Device Ativado. Dispositivo: {self._device}")
-
-    def _cleanup_ddp(self) -> None:
-        """Encerra o grupo de processos DDP."""
-        if self._is_ddp and dist.is_initialized():
-            dist.destroy_process_group()
+            else:
+                self._is_ddp = False
+                self._world_size = 1
+                self._rank = 0
+                self._local_rank = 0
+                self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+                self._is_master = True
+                logger.info(f"Modo Single Device Ativado. Dispositivo: {self._device}")
 
     def _train(self, loader: DataLoader):
         running_loss = 0.0
@@ -251,5 +273,4 @@ class Train:
 
         if self._is_master:
             logger.info("Treinamento concluído.")
-        
-        self._cleanup_ddp()
+
