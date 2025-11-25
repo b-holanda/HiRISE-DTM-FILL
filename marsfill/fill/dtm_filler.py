@@ -7,6 +7,7 @@ from typing import Tuple
 import numpy as np
 from osgeo import gdal
 from tqdm import tqdm
+from scipy.ndimage import binary_dilation, gaussian_filter
 
 from marsfill.model.eval import Evaluator 
 
@@ -58,82 +59,108 @@ class DTMFiller:
 
         logger.info(f"Processando {len(steps)} blocos...")
 
-        for x_core, y_core in tqdm(steps, desc="Infilling"):
-            w_core, h_core = self._get_read_window_size(orthoimage_width, orthoimage_height, x_core, y_core)
+        for x_tile, y_tile in tqdm(steps, desc="Infilling"):
+            w_tile, h_tile = self._calculate_tile_size(orthoimage_width, orthoimage_height, x_tile, y_tile)
             
-            x_read_start, x_read_end = self._get_vertical_points_of_read_window(orthoimage_width, x_core, w_core)
+            x_box_start, x_box_end = self._calculate_vertical_bound_box_distance(orthoimage_width, x_tile, w_tile)
             
-            y_read_start, y_read_end = self._get_horizontal_points_of_read_window(orthoimage_height, y_core, h_core)
+            y_box_start, y_box_end = self._calculate_horizontal_bound_box_distance(orthoimage_height, y_tile, h_tile)
 
-            w_read = x_read_end - x_read_start
-            h_read = y_read_end - y_read_start
+            w_box = x_box_end - x_box_start
+            h_box = y_box_end - y_box_start
 
-            dtm_core = output_band.ReadAsArray(x_core, y_core, w_core, h_core)
+            dtm_tile = output_band.ReadAsArray(x_tile, y_tile, w_tile, h_tile)
   
-            if dtm_core is None:
+            if dtm_tile is None:
                 continue
 
-            mask_nodata_core = (dtm_core == nodata_val) | np.isnan(dtm_core)
+            mask_nodata_tile = (dtm_tile == nodata_val) | np.isnan(dtm_tile)
 
-            if not np.any(mask_nodata_core):
+            if not np.any(mask_nodata_tile):
                 continue
 
-            normalized_orthoimage_tile_padded = self._crop_and_normalize_orthoimage(
-                orthoimage_band, x_read_start, y_read_start, w_read, h_read
+            orthoimage_box = self._crop_bounding_box(
+                orthoimage_band, x_box_start, y_box_start, w_box, h_box
             )
 
-            normalized_dtm_predicted_tile_padded = self._evaluator.predict(
-                padding=normalized_orthoimage_tile_padded, 
-                width=w_read, 
-                height=h_read
+            orthoimage_box_normalized = self._normalize_orthoimage(orthoimage_box)
+
+            dtm_predicted_box_normalized = self._evaluator.predict(
+                orthoimage=orthoimage_box_normalized, 
+                width=w_box, 
+                height=h_box
             )
 
-            dtm_predicted_tile = self._extract_predicted_dtm(
-                normalized_dtm_predicted_tile_padded,
-                dtm_core,
-                x_core,
-                y_core,
-                x_read_start,
-                y_read_start,
-                h_core,
-                w_core,
-                ~mask_nodata_core
+            dtm_predicted_tile_normalized = self._crop_title_of_dtm_box(
+                dtm_predicted_box_normalized,
+                x_tile,
+                y_tile,
+                x_box_start,
+                y_box_start,
+                h_tile,
+                w_tile
             )
 
-            dtm_core[mask_nodata_core] = dtm_predicted_tile[mask_nodata_core]
-            output_band.WriteArray(dtm_core, x_core, y_core)
-        
+            valid_mask = ~mask_nodata_tile
+            dtm_predicted_tile = None
+
+            if np.sum(valid_mask) > 10:
+                dtm_predicted_tile = self._unormalize_dtm(dtm_predicted_tile_normalized, dtm_tile, valid_mask)
+            else:
+                dtm_predicted_tile = dtm_predicted_tile_normalized
+
+            dtm_tile_raw = dtm_tile.copy()
+
+            dtm_tile_raw[mask_nodata_tile] = dtm_predicted_tile[mask_nodata_tile]
+
+            if np.any(mask_nodata_tile):
+                dtm_tile = self._blend_seams(dtm_tile_raw, mask_nodata_tile)
+            else:
+                dtm_tile = dtm_tile_raw
+
+            output_band.WriteArray(dtm_tile, x_tile, y_tile)
+
         output_band.FlushCache()
         orthoimage_dataset = None
         output_dataset = None
 
         logger.info(f"Processamento concluído, arquivo salvo em: {output_file_path}")
 
-    def _extract_predicted_dtm(self, 
-            normalized_dtm_predicted_tile_padded: np.ndarray, 
-            dtm_core: np.ndarray,
-            x_core: int, 
-            y_core: int, 
-            x_read_start: int, 
-            y_read_start: int, 
-            h_core: int, 
-            w_core: int, 
-            valid_mask: np.ndarray
+    def _blend_seams(self, dtm_filled: np.ndarray, mask_hole: np.ndarray, width: int = 5) -> np.ndarray:
+        dilated_mask = binary_dilation(mask_hole, iterations=width)
+        dtm_blurred = gaussian_filter(dtm_filled, sigma=2.0)
+
+        blend_zone = dilated_mask ^ binary_dilation(mask_hole, iterations=0)
+        blend_zone = dilated_mask & ~mask_hole
+
+        blend_zone_inner = mask_hole & binary_dilation(~mask_hole, iterations=width)
+
+        final_blend_zone = blend_zone | blend_zone_inner
+
+        dtm_out = dtm_filled.copy()
+
+        dtm_out[final_blend_zone] = dtm_blurred[final_blend_zone]
+
+        return dtm_out
+
+    def _crop_title_of_dtm_box(self, 
+            dtm_box: np.ndarray, 
+            x_tile: int, 
+            y_tile: int, 
+            x_box_start: int, 
+            y_box_start: int, 
+            h_tile: int, 
+            w_tile: int,
         ) -> np.ndarray:
         
-        off_x = x_core - x_read_start
-        off_y = y_core - y_read_start
+        off_x = x_tile - x_box_start
+        off_y = y_tile - y_box_start
 
-        normalized_dtm_predicted_tile = normalized_dtm_predicted_tile_padded[off_y : off_y + h_core, off_x : off_x + w_core]
+        return dtm_box[off_y : off_y + h_tile, off_x : off_x + w_tile]
 
-        if np.sum(valid_mask) > 10:
-            return self._unormalize_dtm_predicted_tile(normalized_dtm_predicted_tile, dtm_core, valid_mask)
-
-        return normalized_dtm_predicted_tile
-
-    def _unormalize_dtm_predicted_tile(self, normalized_dtm_predicted_tile: np.ndarray, dtm_core: np.ndarray, valid_mask: np.ndarray) -> np.ndarray:
-        mu_real = np.mean(dtm_core[valid_mask])
-        std_real = np.std(dtm_core[valid_mask])
+    def _unormalize_dtm(self, normalized_dtm_predicted_tile: np.ndarray, dtm_tile: np.ndarray, valid_mask: np.ndarray) -> np.ndarray:
+        mu_real = np.mean(dtm_tile[valid_mask])
+        std_real = np.std(dtm_tile[valid_mask])
         mu_pred = np.mean(normalized_dtm_predicted_tile[valid_mask])
         std_pred = np.std(normalized_dtm_predicted_tile[valid_mask])
         
@@ -142,31 +169,31 @@ class DTMFiller:
     
         return normalized_dtm_predicted_tile * scale + offset
 
-    def _get_read_window_size(self, orthoimage_width: int, orthoimage_height: int, x_core: int, y_core: int) -> Tuple[int, int]:
-        w_core = min(self._tile_size, orthoimage_width - x_core)
-        h_core = min(self._tile_size, orthoimage_height - y_core)
+    def _calculate_tile_size(self, orthoimage_width: int, orthoimage_height: int, x_tile: int, y_tile: int) -> Tuple[int, int]:
+        w_tile = min(self._tile_size, orthoimage_width - x_tile)
+        h_tile = min(self._tile_size, orthoimage_height - y_tile)
 
-        return w_core, h_core
+        return w_tile, h_tile
 
-    def _get_vertical_points_of_read_window(self, orthoimage_width: int, x_core: int, w_core: int) -> Tuple[int, int]:
-        x_read_start = max(0, x_core - self._padding_size)
-        x_read_end = min(orthoimage_width, x_core + w_core + self._padding_size)
+    def _calculate_vertical_bound_box_distance(self, orthoimage_width: int, x_tile: int, w_tile: int) -> Tuple[int, int]:
+        x_box_start = max(0, x_tile - self._padding_size)
+        x_box_end = min(orthoimage_width, x_tile + w_tile + self._padding_size)
 
-        return x_read_start, x_read_end
+        return x_box_start, x_box_end
     
-    def _get_horizontal_points_of_read_window(self, orthoimage_height: int, y_core: int, h_core: int) -> Tuple[int, int]:
-        y_read_start = max(0, y_core - self._padding_size)
-        y_read_end = min(orthoimage_height, y_core + h_core + self._padding_size)
+    def _calculate_horizontal_bound_box_distance(self, orthoimage_height: int, y_tile: int, h_tile: int) -> Tuple[int, int]:
+        y_box_start = max(0, y_tile - self._padding_size)
+        y_box_end = min(orthoimage_height, y_tile + h_tile + self._padding_size)
 
-        return y_read_start, y_read_end
+        return y_box_start, y_box_end
 
-    def _crop_and_normalize_orthoimage(self, orthoimage_band: gdal.Band, x_read_start: int, y_read_start: int, w_read: int, h_read: int) -> np.ndarray:
-        orthoimage_padded = orthoimage_band.ReadAsArray(x_read_start, y_read_start, w_read, h_read).astype(np.float32)
+    def _crop_bounding_box(self, orthoimage_band: gdal.Band, x_box_start: int, y_box_start: int, w_box: int, h_box: int) -> np.ndarray:
+        orthoimage_box = orthoimage_band.ReadAsArray(x_box_start, y_box_start, w_box, h_box).astype(np.float32)
 
-        return self._normalize_orthoimage_padded(orthoimage_padded)
+        return orthoimage_box
 
-    def _normalize_orthoimage_padded(self, orthoimage_padded: np.ndarray) -> np.ndarray:
-        min_v, max_v = orthoimage_padded.min(), orthoimage_padded.max()
-        ortho_norm = (orthoimage_padded - min_v) / (max_v - min_v + 1e-8)
+    def _normalize_orthoimage(self, orthoimage: np.ndarray) -> np.ndarray:
+        min_v, max_v = orthoimage.min(), orthoimage.max()
+        ortho_norm = (orthoimage - min_v) / (max_v - min_v + 1e-8)
         
         return np.stack([ortho_norm]*3, axis=-1)

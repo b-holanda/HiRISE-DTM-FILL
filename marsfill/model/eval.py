@@ -48,8 +48,8 @@ class Evaluator:
 
         return new_state_dict
 
-    def predict(self, padding: np.ndarray, height: int, width: int) -> np.ndarray:
-        inputs = self._processor(images=padding, return_tensors="pt")
+    def predict(self, orthoimage: np.ndarray, height: int, width: int) -> np.ndarray:
+        inputs = self._processor(images=orthoimage, return_tensors="pt")
         inputs = {k: v.to(self._device) for k, v in inputs.items()}
 
         with torch.no_grad():
