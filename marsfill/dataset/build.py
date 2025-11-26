@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 from osgeo import gdal
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures.process import BrokenProcessPool
 from typing import Optional, Tuple, List, Dict, Any
 import zipfile
 import shutil
@@ -264,7 +265,13 @@ class DatasetBuilder:
             aligned_dataset = None
 
         except Exception as error:
-            print(f"Erro worker {pair_identifier}: {error}")
+            logger.exception(
+                "Erro processando par %s (split=%s, test_label=%s)",  # noqa: TRY401
+                pair_identifier,
+                dataset_split,
+                test_label,
+            )
+            raise
 
         finally:
             _safe_unlink(virtual_ortho_path)
@@ -373,6 +380,12 @@ class DatasetBuilder:
                     ) as zip_file_handle:
                         for file_key in found_files_keys:
                             file_name = os.path.basename(file_key)
+                            if not file_name:
+                                logger.warning(
+                                    "Ignorando chave S3 sem nome de arquivo (possível diretório): %s",
+                                    file_key,
+                                )
+                                continue
 
                             try:
                                 s3_object = self.s3_client.get_object(
@@ -440,7 +453,7 @@ class DatasetBuilder:
         logger.info(f"Workers: {active_workers} | Batch Size: {self.batch_size}")
 
         with ProcessPoolExecutor(max_workers=active_workers) as executor:
-            futures = [
+            future_to_task = {
                 executor.submit(
                     self.worker_process_pair,
                     task,
@@ -449,11 +462,12 @@ class DatasetBuilder:
                     self.download_directory,
                     self.s3_bucket_name,
                     self.s3_prefix,
-                )
+                ): task
                 for task in tasks
-            ]
+            }
 
-            for future in as_completed(futures):
+            for future in as_completed(future_to_task):
+                task_info = future_to_task[future]
                 try:
                     split_name, tiles_list = future.result()
 
@@ -468,8 +482,24 @@ class DatasetBuilder:
                             data_buffers[split_name] = []
                             batch_counters[split_name] += 1
 
+                except BrokenProcessPool as error:
+                    logger.exception(
+                        "Pool de processos encerrado abruptamente para split=%s | ortho=%s | dtm=%s: %s",
+                        task_info.get("split"),
+                        task_info.get("ortho_url"),
+                        task_info.get("dtm_url"),
+                        error,
+                    )
+                    break
                 except Exception as error:
-                    logger.exception(f"Erro no loop principal: {error}")
+                    logger.exception(
+                        "Erro no loop principal para split=%s | test_label=%s | ortho=%s | dtm=%s: %s",
+                        task_info.get("split"),
+                        task_info.get("test_label"),
+                        task_info.get("ortho_url"),
+                        task_info.get("dtm_url"),
+                        error,
+                    )
 
         for split_name, buffer_data in data_buffers.items():
             if buffer_data:
