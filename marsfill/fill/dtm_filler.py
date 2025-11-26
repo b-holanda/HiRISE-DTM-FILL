@@ -1,221 +1,307 @@
-from logging import Logger
 import os
-from pathlib import Path
 import shutil
-from typing import Tuple
-
+import tempfile
+import boto3
 import numpy as np
+from pathlib import Path
+from typing import Tuple, List, Optional, Any
 from osgeo import gdal
 from tqdm import tqdm
 from scipy.ndimage import binary_dilation, gaussian_filter
 
-from marsfill.model.eval import Evaluator 
+from marsfill.model.eval import Evaluator
+from marsfill.utils import Logger
 
-logger = Logger(__name__)
+logger = Logger()
 
 class DTMFiller:
-    def __init__(self,
-        evaluator: Evaluator,
-        padding_size: int,
-        tile_size: int,
-    ):
-        self._evaluator = evaluator
-        self._padding_size = padding_size
-        self._tile_size = tile_size
+    """
+    Classe responsável por preencher lacunas (NoData) em arquivos DTM usando inferência de IA.
+    Suporta salvamento local ou envio direto para S3 após o processamento.
+    """
 
-    def fill(self, ortho_path: Path, dtm_path: Path, output_folder: Path) -> tuple[Path, Path]:
-        output_file_path = output_folder / f"predicted_{os.path.basename(dtm_path).split(".")[0].lower()}.tif"
-        output_file_mask_path = output_folder / f"mask_{os.path.basename(dtm_path).split(".")[0].lower()}.tif"
+    def __init__(
+        self,
+        depth_evaluator: Evaluator,
+        context_padding_size: int,
+        processing_tile_size: int,
+        s3_client: Optional[Any] = None
+    ) -> None:
+        """
+        Inicializa o preenchedor de terreno.
 
-        if not os.path.exists(output_file_path):
-            logger.info(f"Copiando DTM original para: {output_file_path}")
-            shutil.copy(dtm_path, output_file_path)
+        Parâmetros:
+            depth_evaluator (Evaluator): Instância da classe avaliadora contendo o modelo de IA carregado.
+            context_padding_size (int): Tamanho da borda extra (padding) para dar contexto ao modelo.
+            processing_tile_size (int): Tamanho do bloco central (tile) onde a predição será efetivamente salva.
+            s3_client (Optional[Any]): Cliente Boto3 para upload S3. Se None, cria um novo se necessário.
+        """
+        self.depth_evaluator = depth_evaluator
+        self.context_padding_size = context_padding_size
+        self.processing_tile_size = processing_tile_size
+        self.s3_client = s3_client
 
-        orthoimage_dataset = gdal.Open(str(ortho_path), gdal.GA_ReadOnly)
-        output_dataset = gdal.Open(str(output_file_path), gdal.GA_Update)
+    def _get_s3_client(self) -> Any:
+        """
+        Retorna o cliente S3 existente ou cria um novo.
+        """
+        if self.s3_client is None:
+            self.s3_client = boto3.client('s3')
+        return self.s3_client
 
-        if not orthoimage_dataset or not output_dataset:
-            logger.error("Erro ao abrir arquivos GDAL.")
-            raise FileNotFoundError("Erro ao abrir arquivos.")
+    def fill_missing_elevation_data(
+        self, 
+        orthophoto_file_path: Path, 
+        digital_terrain_model_path: Path, 
+        output_destination: str
+    ) -> Tuple[str, str]:
+        """
+        Executa o pipeline de preenchimento e salva no destino (Local ou S3).
+
+        Parâmetros:
+            orthophoto_file_path (Path): Caminho local para o arquivo GeoTIFF da ortofoto.
+            digital_terrain_model_path (Path): Caminho local para o arquivo GeoTIFF do DTM.
+            output_destination (str): Caminho do diretório local (ex: 'data/output') ou URI S3 (ex: 's3://bucket/output').
+
+        Retorno:
+            Tuple[str, str]: Caminhos finais (ou URIs) do DTM preenchido e da máscara.
+        """
+        is_s3_output = str(output_destination).startswith("s3://")
         
-        orthoimage_band = orthoimage_dataset.GetRasterBand(1)
-        output_band = output_dataset.GetRasterBand(1)
+        # Define onde o trabalho pesado do GDAL vai acontecer (sempre localmente)
+        if is_s3_output:
+            working_directory = Path(tempfile.mkdtemp())
+        else:
+            working_directory = Path(output_destination)
+            working_directory.mkdir(parents=True, exist_ok=True)
 
-        orthoimage_width = orthoimage_dataset.RasterXSize
-        orthoimage_height = orthoimage_dataset.RasterYSize
-
-        nodata_val = output_band.GetNoDataValue()
-
-        if nodata_val is None:
-            nodata_val = -3.4028234663852886e+38
-
-        driver = gdal.GetDriverByName('GTiff')
-        mask_dataset = driver.Create(
-            str(output_file_mask_path),
-            orthoimage_width,
-            orthoimage_height,
-            1,
-            gdal.GDT_Byte,
-            options=['COMPRESS=LZW']
+        # 1. Preparação dos Arquivos de Trabalho
+        working_dtm_path, working_mask_path = self._prepare_working_files(
+            digital_terrain_model_path, working_directory
         )
-        mask_dataset.SetGeoTransform(orthoimage_dataset.GetGeoTransform())
-        mask_dataset.SetProjection(orthoimage_dataset.GetProjection())
+
+        # 2. Execução do Processamento (GDAL)
+        try:
+            self._execute_filling_process(
+                orthophoto_file_path, 
+                working_dtm_path, 
+                working_mask_path
+            )
+            
+            # 3. Finalização (Upload S3 ou Manter Local)
+            final_dtm_uri, final_mask_uri = self._finalize_output(
+                working_dtm_path, 
+                working_mask_path, 
+                output_destination, 
+                is_s3_output
+            )
+            
+            return final_dtm_uri, final_mask_uri
+
+        finally:
+            # Limpeza de arquivos temporários se estivemos usando S3
+            if is_s3_output and os.path.exists(working_directory):
+                shutil.rmtree(working_directory)
+
+    def _prepare_working_files(self, source_dtm_path: Path, working_directory: Path) -> Tuple[Path, Path]:
+        """
+        Cria os caminhos de trabalho e copia o DTM original.
+        """
+        base_filename = os.path.basename(source_dtm_path).split(".")[0].lower()
+        working_dtm_path = working_directory / f"predicted_{base_filename}.tif"
+        working_mask_path = working_directory / f"mask_{base_filename}.tif"
+
+        if not os.path.exists(working_dtm_path):
+            logger.info(f"Copiando DTM original para área de trabalho: {working_dtm_path}")
+            shutil.copy(source_dtm_path, working_dtm_path)
+            
+        return working_dtm_path, working_mask_path
+
+    def _execute_filling_process(self, orthophoto_path: Path, dtm_path: Path, mask_path: Path) -> None:
+        """
+        Contém a lógica principal de abertura do GDAL e iteração sobre os tiles.
+        """
+        orthophoto_dataset = gdal.Open(str(orthophoto_path), gdal.GA_ReadOnly)
+        dtm_dataset = gdal.Open(str(dtm_path), gdal.GA_Update)
+
+        if not orthophoto_dataset or not dtm_dataset:
+            logger.error("Erro crítico ao abrir arquivos GDAL.")
+            raise FileNotFoundError("Falha ao abrir datasets.")
+
+        ortho_band = orthophoto_dataset.GetRasterBand(1)
+        dtm_band = dtm_dataset.GetRasterBand(1)
         
+        width = orthophoto_dataset.RasterXSize
+        height = orthophoto_dataset.RasterYSize
+        
+        no_data_val = dtm_band.GetNoDataValue()
+        if no_data_val is None:
+            no_data_val = -3.4028234663852886e+38
+
+        # Criação do dataset de máscara
+        mask_dataset = self._create_mask_dataset(
+            mask_path, width, height, 
+            orthophoto_dataset.GetGeoTransform(), 
+            orthophoto_dataset.GetProjection()
+        )
         mask_band = mask_dataset.GetRasterBand(1)
-        mask_band.SetNoDataValue(0)
 
-        logger.info(f"Iniciado preenchimento do arquivo: {os.path.basename(dtm_path)}")
-        logger.info(f"Orthoimage base carregada: {os.path.basename(ortho_path)}")
-        logger.info(f"📐 Dimensões: {orthoimage_width}x{orthoimage_height} | Padding: {self._padding_size}px")
-
-        steps = []
-        for y in range(0, orthoimage_height, self._tile_size):
-            for x in range(0, orthoimage_width, self._tile_size):
-                steps.append((x, y))
-
-        logger.info(f"Processando {len(steps)} blocos...")
-
-        for x_tile, y_tile in tqdm(steps, desc="Infilling"):
-            w_tile, h_tile = self._calculate_tile_size(orthoimage_width, orthoimage_height, x_tile, y_tile)
-            
-            x_box_start, x_box_end = self._calculate_vertical_bound_box_distance(orthoimage_width, x_tile, w_tile)
-            
-            y_box_start, y_box_end = self._calculate_horizontal_bound_box_distance(orthoimage_height, y_tile, h_tile)
-
-            w_box = x_box_end - x_box_start
-            h_box = y_box_end - y_box_start
-
-            dtm_tile = output_band.ReadAsArray(x_tile, y_tile, w_tile, h_tile)
-  
-            if dtm_tile is None:
-                continue
-
-            mask_nodata_tile = (dtm_tile == nodata_val) | np.isnan(dtm_tile)
-
-            mask_to_save = mask_nodata_tile.astype(np.uint8)
-            mask_band.WriteArray(mask_to_save, x_tile, y_tile)
-
-            if not np.any(mask_nodata_tile):
-                continue
-
-            orthoimage_box = self._crop_bounding_box(
-                orthoimage_band, x_box_start, y_box_start, w_box, h_box
-            )
-
-            orthoimage_box_normalized = self._normalize_orthoimage(orthoimage_box)
-
-            dtm_predicted_box_normalized = self._evaluator.predict(
-                orthoimage=orthoimage_box_normalized, 
-                width=w_box, 
-                height=h_box
-            )
-
-            dtm_predicted_tile_normalized = self._crop_title_of_dtm_box(
-                dtm_predicted_box_normalized,
-                x_tile,
-                y_tile,
-                x_box_start,
-                y_box_start,
-                h_tile,
-                w_tile
-            )
-
-            valid_mask = ~mask_nodata_tile
-            dtm_predicted_tile = None
-
-            if np.sum(valid_mask) > 10:
-                dtm_predicted_tile = self._unormalize_dtm(dtm_predicted_tile_normalized, dtm_tile, valid_mask)
-            else:
-                dtm_predicted_tile = dtm_predicted_tile_normalized
-
-            dtm_tile_raw = dtm_tile.copy()
-
-            dtm_tile_raw[mask_nodata_tile] = dtm_predicted_tile[mask_nodata_tile]
-
-            if np.any(mask_nodata_tile):
-                dtm_tile = self._blend_seams(dtm_tile_raw, mask_nodata_tile)
-            else:
-                dtm_tile = dtm_tile_raw
-
-            output_band.WriteArray(dtm_tile, x_tile, y_tile)
-
-        output_band.FlushCache()
-        mask_band.FlushCache()
-        orthoimage_dataset = None
-        output_dataset = None
-
-        logger.info(f"Processamento concluído, arquivo salvo em: {output_file_path}")
-
-        return output_file_path, output_file_mask_path
-
-    def _blend_seams(self, dtm_filled: np.ndarray, mask_hole: np.ndarray, width: int = 5) -> np.ndarray:
-        dilated_mask = binary_dilation(mask_hole, iterations=width)
-        dtm_blurred = gaussian_filter(dtm_filled, sigma=2.0)
-
-        blend_zone = dilated_mask ^ binary_dilation(mask_hole, iterations=0)
-        blend_zone = dilated_mask & ~mask_hole
-
-        blend_zone_inner = mask_hole & binary_dilation(~mask_hole, iterations=width)
-
-        final_blend_zone = blend_zone | blend_zone_inner
-
-        dtm_out = dtm_filled.copy()
-
-        dtm_out[final_blend_zone] = dtm_blurred[final_blend_zone]
-
-        return dtm_out
-
-    def _crop_title_of_dtm_box(self, 
-            dtm_box: np.ndarray, 
-            x_tile: int, 
-            y_tile: int, 
-            x_box_start: int, 
-            y_box_start: int, 
-            h_tile: int, 
-            w_tile: int,
-        ) -> np.ndarray:
+        logger.info(f"Iniciando preenchimento em: {dtm_path}")
         
-        off_x = x_tile - x_box_start
-        off_y = y_tile - y_box_start
-
-        return dtm_box[off_y : off_y + h_tile, off_x : off_x + w_tile]
-
-    def _unormalize_dtm(self, normalized_dtm_predicted_tile: np.ndarray, dtm_tile: np.ndarray, valid_mask: np.ndarray) -> np.ndarray:
-        mu_real = np.mean(dtm_tile[valid_mask])
-        std_real = np.std(dtm_tile[valid_mask])
-        mu_pred = np.mean(normalized_dtm_predicted_tile[valid_mask])
-        std_pred = np.std(normalized_dtm_predicted_tile[valid_mask])
+        tile_coords = self._generate_processing_grid(width, height)
         
-        scale = std_real / (std_pred + 1e-8)
-        offset = mu_real - (mu_pred * scale)
+        for x, y in tqdm(tile_coords, desc="Processando Tiles"):
+            self._process_single_tile(
+                x, y, width, height, 
+                ortho_band, dtm_band, mask_band, 
+                no_data_val
+            )
+
+        dtm_dataset.FlushCache()
+        mask_dataset.FlushCache()
+        dtm_dataset = None
+        mask_dataset = None
+
+    def _process_single_tile(
+        self, x: int, y: int, total_w: int, total_h: int, 
+        ortho_band: gdal.Band, dtm_band: gdal.Band, mask_band: gdal.Band, 
+        no_data_val: float
+    ) -> None:
+        """
+        Processa um único bloco: lê, infere e escreve.
+        """
+        w_tile, h_tile = self._calculate_current_tile_dimensions(total_w, total_h, x, y)
+        
+        dtm_data = dtm_band.ReadAsArray(x, y, w_tile, h_tile)
+        if dtm_data is None: return
+
+        missing_mask = (dtm_data == no_data_val) | np.isnan(dtm_data)
+        
+        # Salva máscara de onde era buraco
+        mask_band.WriteArray(missing_mask.astype(np.uint8), x, y)
+
+        if not np.any(missing_mask):
+            return
+
+        # Calcula contexto (padding)
+        bbox = self._calculate_context_bounding_box(total_w, total_h, x, y, w_tile, h_tile)
+        
+        ortho_crop = ortho_band.ReadAsArray(
+            bbox['x_start'], bbox['y_start'], bbox['width'], bbox['height']
+        ).astype(np.float32)
+        
+        # Inferência
+        normalized_ortho = self._normalize_image(ortho_crop)
+        predicted_depth_box = self.depth_evaluator.predict(
+            orthoimage=normalized_ortho, 
+            width=bbox['width'], 
+            height=bbox['height']
+        )
+        
+        # Recorte do centro (remove padding)
+        predicted_tile = self._crop_tile_from_context_box(
+            predicted_depth_box, x, y, bbox['x_start'], bbox['y_start'], h_tile, w_tile
+        )
+
+        # Desnormalização e Blending
+        valid_mask = ~missing_mask
+        final_prediction = predicted_tile
+        
+        if np.sum(valid_mask) > 10:
+            final_prediction = self._denormalize_depth_prediction(predicted_tile, dtm_data, valid_mask)
+
+        merged_tile = dtm_data.copy()
+        merged_tile[missing_mask] = final_prediction[missing_mask]
+        
+        blended_tile = self._blend_prediction_edges(merged_tile, missing_mask)
+        
+        dtm_band.WriteArray(blended_tile, x, y)
+
+    def _finalize_output(
+        self, 
+        working_dtm_path: Path, 
+        working_mask_path: Path, 
+        destination_root: str, 
+        is_s3: bool
+    ) -> Tuple[str, str]:
+        """
+        Move os arquivos processados para o destino final (Upload S3 ou apenas retorna caminhos locais).
+        """
+        if not is_s3:
+            # Se for local, os arquivos já estão no lugar certo (prepare_working_files usou output_dir)
+            logger.info(f"Arquivos salvos localmente em: {destination_root}")
+            return str(working_dtm_path), str(working_mask_path)
+        
+        # Lógica S3
+        client = self._get_s3_client()
+        bucket, prefix = self._parse_s3_uri(destination_root)
+        
+        dtm_filename = os.path.basename(working_dtm_path)
+        mask_filename = os.path.basename(working_mask_path)
+        
+        dtm_key = f"{prefix.strip('/')}/{dtm_filename}"
+        mask_key = f"{prefix.strip('/')}/{mask_filename}"
+        
+        logger.info(f"☁️ Iniciando upload para S3: {bucket}/{dtm_key}")
+        client.upload_file(str(working_dtm_path), bucket, dtm_key)
+        
+        logger.info(f"☁️ Iniciando upload da máscara: {bucket}/{mask_key}")
+        client.upload_file(str(working_mask_path), bucket, mask_key)
+        
+        return f"s3://{bucket}/{dtm_key}", f"s3://{bucket}/{mask_key}"
+
+    def _parse_s3_uri(self, uri: str) -> Tuple[str, str]:
+        """
+        Extrai bucket e prefixo de uma URI S3.
+        """
+        parts = uri.replace("s3://", "").split("/", 1)
+        bucket = parts[0]
+        prefix = parts[1] if len(parts) > 1 else ""
+        return bucket, prefix
+
+    # --- Métodos Auxiliares de Processamento (Mesmos da versão anterior, apenas mantidos para integridade) ---
     
-        return normalized_dtm_predicted_tile * scale + offset
+    def _create_mask_dataset(self, path: Path, w: int, h: int, geo: tuple, proj: str) -> gdal.Dataset:
+        driver = gdal.GetDriverByName('GTiff')
+        ds = driver.Create(str(path), w, h, 1, gdal.GDT_Byte, options=['COMPRESS=LZW'])
+        ds.SetGeoTransform(geo)
+        ds.SetProjection(proj)
+        ds.GetRasterBand(1).SetNoDataValue(0)
+        return ds
 
-    def _calculate_tile_size(self, orthoimage_width: int, orthoimage_height: int, x_tile: int, y_tile: int) -> Tuple[int, int]:
-        w_tile = min(self._tile_size, orthoimage_width - x_tile)
-        h_tile = min(self._tile_size, orthoimage_height - y_tile)
+    def _generate_processing_grid(self, w: int, h: int) -> List[Tuple[int, int]]:
+        return [(x, y) for y in range(0, h, self.processing_tile_size) for x in range(0, w, self.processing_tile_size)]
 
-        return w_tile, h_tile
+    def _calculate_current_tile_dimensions(self, tw: int, th: int, x: int, y: int) -> Tuple[int, int]:
+        return min(self.processing_tile_size, tw - x), min(self.processing_tile_size, th - y)
 
-    def _calculate_vertical_bound_box_distance(self, orthoimage_width: int, x_tile: int, w_tile: int) -> Tuple[int, int]:
-        x_box_start = max(0, x_tile - self._padding_size)
-        x_box_end = min(orthoimage_width, x_tile + w_tile + self._padding_size)
+    def _calculate_context_bounding_box(self, tw: int, th: int, x: int, y: int, w: int, h: int) -> dict:
+        xs = max(0, x - self.context_padding_size)
+        ys = max(0, y - self.context_padding_size)
+        return {
+            'x_start': xs, 'y_start': ys,
+            'width': min(tw, x + w + self.context_padding_size) - xs,
+            'height': min(th, y + h + self.context_padding_size) - ys
+        }
 
-        return x_box_start, x_box_end
-    
-    def _calculate_horizontal_bound_box_distance(self, orthoimage_height: int, y_tile: int, h_tile: int) -> Tuple[int, int]:
-        y_box_start = max(0, y_tile - self._padding_size)
-        y_box_end = min(orthoimage_height, y_tile + h_tile + self._padding_size)
+    def _crop_tile_from_context_box(self, box: np.ndarray, xt: int, yt: int, xs: int, ys: int, h: int, w: int) -> np.ndarray:
+        off_x, off_y = xt - xs, yt - ys
+        return box[off_y : off_y + h, off_x : off_x + w]
 
-        return y_box_start, y_box_end
+    def _normalize_image(self, img: np.ndarray) -> np.ndarray:
+        mn, mx = img.min(), img.max()
+        norm = (img - mn) / (mx - mn + 1e-8)
+        return np.stack([norm]*3, axis=-1)
 
-    def _crop_bounding_box(self, orthoimage_band: gdal.Band, x_box_start: int, y_box_start: int, w_box: int, h_box: int) -> np.ndarray:
-        orthoimage_box = orthoimage_band.ReadAsArray(x_box_start, y_box_start, w_box, h_box).astype(np.float32)
+    def _denormalize_depth_prediction(self, pred: np.ndarray, real: np.ndarray, mask: np.ndarray) -> np.ndarray:
+        mu_r, std_r = np.mean(real[mask]), np.std(real[mask])
+        mu_p, std_p = np.mean(pred[mask]), np.std(pred[mask])
+        return pred * (std_r / (std_p + 1e-8)) + (mu_r - (mu_p * (std_r / (std_p + 1e-8))))
 
-        return orthoimage_box
-
-    def _normalize_orthoimage(self, orthoimage: np.ndarray) -> np.ndarray:
-        min_v, max_v = orthoimage.min(), orthoimage.max()
-        ortho_norm = (orthoimage - min_v) / (max_v - min_v + 1e-8)
-        
-        return np.stack([ortho_norm]*3, axis=-1)
+    def _blend_prediction_edges(self, dtm: np.ndarray, mask: np.ndarray, width: int = 5) -> np.ndarray:
+        dilated = binary_dilation(mask, iterations=width)
+        blurred = gaussian_filter(dtm, sigma=2.0)
+        zone = (dilated & ~mask) | (mask & binary_dilation(~mask, iterations=width))
+        out = dtm.copy()
+        out[zone] = blurred[zone]
+        return out
