@@ -30,13 +30,7 @@ def test_fill_flow_local(monkeypatch, tmp_path):
 
     def fake_finalize(self, working_dtm_path, working_mask_path, destination_root, is_s3):
         called["finalize"] = True
-        return (
-            str(working_dtm_path),
-            str(working_mask_path),
-            working_dtm_path,
-            working_mask_path,
-            working_dtm_path,
-        )
+        return str(working_dtm_path), str(working_mask_path)
 
     monkeypatch.setattr(DTMFiller, "_execute_filling_process", fake_execute)
     monkeypatch.setattr(DTMFiller, "_finalize_output", fake_finalize)

@@ -11,8 +11,8 @@ def test_load_all_and_get_profile(tmp_path):
     file_path.write_text("foo: 1\nbar: test\n")
 
     loaded = load_all_profiles(str(profiles_dir))
-    assert "demo.profile" in loaded
-    assert loaded["demo.profile"]["foo"] == 1
+    assert "demo" in loaded
+    assert loaded["demo"]["foo"] == 1
 
-    profile = get_profile("demo.profile", str(profiles_dir))
+    profile = get_profile("demo", str(profiles_dir))
     assert profile["bar"] == "test"

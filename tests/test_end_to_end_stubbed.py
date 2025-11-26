@@ -29,16 +29,19 @@ def test_end_to_end_stubbed(monkeypatch, tmp_path):
     dataset_cli.main()
 
     # Train
-    monkeypatch.setattr(
-        train_cli,
-        "MarsDepthTrainer",
-        type("T", (), {"__init__": lambda self, **k: None, "run_training_loop": lambda self: None}),
-    )
-    monkeypatch.setattr(
-        train_cli,
-        "get_profile",
-        lambda name: {"train": {"local_data_dir": str(tmp_path), "batch_size": 1, "learning_rate": 1e-4}},
-    )
+    class FakeTrainer:
+        def __init__(self, **kwargs):
+            return None
+
+        def run_training_loop(self):
+            return None
+
+    class FakeTrainingCLI(train_cli.TrainingCLI):
+        def __init__(self):
+            fake_logger = types.SimpleNamespace(info=lambda *a, **k: None, error=lambda *a, **k: None)
+            super().__init__(trainer_class=FakeTrainer, profile_loader=lambda name: {"train": {"local_data_dir": str(tmp_path), "batch_size": 1, "learning_rate": 1e-4}}, logger_instance=fake_logger)
+
+    monkeypatch.setattr(train_cli, "TrainingCLI", FakeTrainingCLI)
     monkeypatch.setattr(train_cli, "Logger", lambda: types.SimpleNamespace(info=lambda *a, **k: None, error=lambda *a, **k: None))
     monkeypatch.setattr(sys, "argv", ["prog", "--profile", "prod", "--mode", "local"])
     train_cli.main()

@@ -13,6 +13,12 @@ def test_worker_process_pair_local(monkeypatch, tmp_path):
         def raise_for_status(self):
             return None
 
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
     def fake_get(url, stream=True, timeout=(15, 300)):
         return FakeResp(b"fake-bytes")
 

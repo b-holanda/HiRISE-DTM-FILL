@@ -16,6 +16,9 @@ class FakeModel:
         self.device = device
         return self
 
+    def eval(self):
+        return self
+
     def load_state_dict(self, state_dict):
         self.loaded_state = state_dict
 

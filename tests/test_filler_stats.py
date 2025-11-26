@@ -10,9 +10,11 @@ def test_filler_stats_with_mock_gdal(monkeypatch, tmp_path):
     def write_array(path, array, nodata):
         data_store[str(path)] = (array, nodata)
 
-    gt = np.array([[1, 2], [3, 4]], dtype=np.float32)
-    filled = np.array([[1, 2], [3, 5]], dtype=np.float32)
-    mask = np.array([[0, 1], [0, 0]], dtype=np.float32)
+    gt = np.ones((16, 16), dtype=np.float32)
+    filled = np.ones((16, 16), dtype=np.float32)
+    filled[0, 0] = 2.0
+    mask = np.zeros((16, 16), dtype=np.float32)
+    mask[0, 0] = 1.0
 
     gt_path = tmp_path / "gt.tif"
     filled_path = tmp_path / "filled.tif"

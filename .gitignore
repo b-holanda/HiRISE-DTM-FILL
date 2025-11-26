@@ -16,3 +16,7 @@ datasets
 outputs/
 .env
 data/
+Miniconda3-latest-Linux-x86_64.sh
+condaenv.5r9463_e.requirements.txt
+htmlcov
+.coverage
