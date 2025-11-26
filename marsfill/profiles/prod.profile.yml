@@ -16,3 +16,9 @@ train:
   w_l1: 0.6
   w_grad: 0.3
   w_ssim: 0.1
+
+fill:
+  selected_model: Intel/dpt-large
+  tile_size: 512
+  padding_size: 128
+  model_path: "outputs/marsfill_model.pth"

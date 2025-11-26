@@ -23,9 +23,9 @@ class DTMFiller:
         self._padding_size = padding_size
         self._tile_size = tile_size
 
-    def fill(self, ortho_path: Path, dtm_path: Path, output_folder: Path) -> None:
-        output_file_path = output_folder / f"predicted_{os.path.basename(dtm_path)}"
-        output_file_mask_path = output_folder / f"mask_{os.path.basename(dtm_path)}"
+    def fill(self, ortho_path: Path, dtm_path: Path, output_folder: Path) -> tuple[Path, Path]:
+        output_file_path = output_folder / f"predicted_{os.path.basename(dtm_path).split(".")[0].lower()}.tif"
+        output_file_mask_path = output_folder / f"mask_{os.path.basename(dtm_path).split(".")[0].lower()}.tif"
 
         if not os.path.exists(output_file_path):
             logger.info(f"Copiando DTM original para: {output_file_path}")
@@ -145,6 +145,8 @@ class DTMFiller:
         output_dataset = None
 
         logger.info(f"Processamento concluído, arquivo salvo em: {output_file_path}")
+
+        return output_file_path, output_file_mask_path
 
     def _blend_seams(self, dtm_filled: np.ndarray, mask_hole: np.ndarray, width: int = 5) -> np.ndarray:
         dilated_mask = binary_dilation(mask_hole, iterations=width)
