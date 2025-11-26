@@ -1,4 +1,3 @@
-
 import numpy as np
 import torch
 
@@ -72,7 +71,7 @@ def test_evaluator_s3_download(monkeypatch, tmp_path):
         def download_file(self, bucket, key, dest):
             self.calls.append((bucket, key, dest))
             # copy local weights into dest
-            torch.save(torch.load(downloaded), dest)
+            torch.save(torch.load(downloaded, weights_only=True), dest)
 
     fake_s3 = FakeS3()
     monkeypatch.setattr(eval_module, "boto3", type("B", (), {"client": lambda *a, **k: fake_s3}))
