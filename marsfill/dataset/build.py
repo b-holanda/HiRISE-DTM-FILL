@@ -100,7 +100,28 @@ class DatasetBuilder:
         random.shuffle(self.assignments)
 
     @staticmethod
-    def worker_process_pair(pair_data: Dict[str, Any], tile_size: int, stride_size: int) -> Tuple[str, List[Dict[str, Any]]]:
+    def _index_to_label(index: int) -> str:
+        """
+        Converte um índice em label alfabético (a, b, c, ..., z, aa, ab, ...)
+        """
+        letters = []
+        while True:
+            index, remainder = divmod(index, 26)
+            letters.append(chr(ord('a') + remainder))
+            if index == 0:
+                break
+            index -= 1
+        return "".join(reversed(letters))
+
+    @staticmethod
+    def worker_process_pair(
+        pair_data: Dict[str, Any],
+        tile_size: int,
+        stride_size: int,
+        download_directory: Optional[Path],
+        s3_bucket_name: Optional[str],
+        s3_prefix: str
+    ) -> Tuple[str, List[Dict[str, Any]]]:
         """
         Processa um par de imagens (Orthoimagem e DTM) em um processo separado.
         Realiza o download em memória, alinhamento (warp), recorte (tiling) e normalização.
@@ -116,6 +137,7 @@ class DatasetBuilder:
         digital_terrain_model_url = pair_data['dtm_url']
         ortho_image_url = pair_data['ortho_url']
         dataset_split = pair_data['split']
+        test_label = pair_data.get('test_label')
         pair_identifier = os.path.basename(ortho_image_url).replace(".JP2", "")
         
         virtual_ortho_path = f"/vsimem/{pair_identifier}_ortho.tif"
@@ -132,6 +154,24 @@ class DatasetBuilder:
 
             ortho_bytes = download_content_as_bytes(ortho_image_url)
             dtm_bytes = download_content_as_bytes(digital_terrain_model_url)
+
+            # Salva cópias integrais para o conjunto de teste
+            if dataset_split == "test" and test_label:
+                if download_directory:
+                    raw_dir = download_directory / Path(s3_prefix.strip("/")) / "test" / f"test-{test_label}"
+                    raw_dir.mkdir(parents=True, exist_ok=True)
+                    (raw_dir / "dtm.IMG").write_bytes(dtm_bytes)
+                    (raw_dir / "ortho.JP2").write_bytes(ortho_bytes)
+                    logger.info(f"💾 [TEST] Copiado original para {raw_dir}")
+                else:
+                    try:
+                        client = boto3.client("s3")
+                        base_key = f"{s3_prefix}test/test-{test_label}"
+                        client.put_object(Bucket=s3_bucket_name, Key=f"{base_key}/dtm.IMG", Body=dtm_bytes)
+                        client.put_object(Bucket=s3_bucket_name, Key=f"{base_key}/ortho.JP2", Body=ortho_bytes)
+                        logger.info(f"☁️ [TEST] Upload original em s3://{s3_bucket_name}/{base_key}")
+                    except Exception as s3_error:
+                        logger.error(f"Falha ao enviar originais de teste: {s3_error}")
 
             gdal.FileFromMemBuffer(virtual_ortho_path, ortho_bytes)
             gdal.FileFromMemBuffer(virtual_dtm_path, dtm_bytes)
@@ -344,12 +384,18 @@ class DatasetBuilder:
         self._prepare_assignments()
 
         tasks = []
+        test_counter = 0
         for pair in datasets:
             destination_split = self.assignments.pop() if self.assignments else "train"
+            test_label = None
+            if destination_split == "test":
+                test_label = self._index_to_label(test_counter)
+                test_counter += 1
             tasks.append({
                 'dtm_url': pair.dtm_url,
                 'ortho_url': pair.ortho_url,
-                'split': destination_split
+                'split': destination_split,
+                'test_label': test_label
             })
 
         data_buffers = {
@@ -369,7 +415,15 @@ class DatasetBuilder:
 
         with ProcessPoolExecutor(max_workers=active_workers) as executor:
             futures = [
-                executor.submit(self.worker_process_pair, task, self.tile_size, self.stride_size) 
+                executor.submit(
+                    self.worker_process_pair,
+                    task,
+                    self.tile_size,
+                    self.stride_size,
+                    self.download_directory,
+                    self.s3_bucket_name,
+                    self.s3_prefix
+                ) 
                 for task in tasks
             ]
 

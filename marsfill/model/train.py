@@ -13,7 +13,7 @@ from enum import Enum
 from typing import Optional, Tuple
 import boto3
 
-from marsfill.model.combined_loss import LossWights, CombinedLoss
+from marsfill.model.combined_loss import LossWeights, CombinedLoss
 from marsfill.model.hirise_dataset import StreamingHiRISeDataset
 from marsfill.utils import Logger, list_parquet_files
 
@@ -37,7 +37,7 @@ class MarsDepthTrainer:
         learning_rate: float,
         total_epochs: int,
         weight_decay: float,
-        loss_weights: LossWights,
+        loss_weights: LossWeights,
         storage_mode: str,
         dataset_root: str,
         dataset_prefix: str = "dataset/v1",
@@ -60,7 +60,7 @@ class MarsDepthTrainer:
             learning_rate (float): Taxa de aprendizado para o otimizador.
             total_epochs (int): Número total de épocas de treinamento.
             weight_decay (float): Fator de decaimento de peso para regularização.
-            loss_weights (LossWights): Pesos para as diferentes componentes da função de perda.
+            loss_weights (LossWeights): Pesos para as diferentes componentes da função de perda.
             storage_mode (str): Modo de armazenamento, aceita "local" ou "s3".
             dataset_root (str): Caminho raiz local ou nome do bucket S3.
             dataset_prefix (str): Prefixo ou subpasta onde os dados estão localizados.
@@ -99,7 +99,7 @@ class MarsDepthTrainer:
             self.logger.info(f"Destino do Modelo:    {self.model_output_uri}")
 
         self.image_processor = DPTImageProcessor.from_pretrained(selected_model_name.value, do_rescale=False)
-        self.loss_calculator = CombinedLoss(lossWeights=loss_weights, device=self.device).to(self.device)
+        self.loss_calculator = CombinedLoss(loss_weights=loss_weights).to(self.device)
         self.gradient_scaler = GradScaler("cuda") if self.device.type == "cuda" else GradScaler("cpu")
 
         if injected_model:

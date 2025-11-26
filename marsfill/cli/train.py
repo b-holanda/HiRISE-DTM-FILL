@@ -4,7 +4,7 @@ import os
 import torch.distributed as dist
 from typing import Tuple, Type, Callable, Optional
 
-from marsfill.model.combined_loss import LossWights
+from marsfill.model.combined_loss import LossWeights
 from marsfill.model.train import AvailableModels, MarsDepthTrainer
 from marsfill.utils import Logger
 from marsfill.utils.profiler import get_profile
@@ -107,10 +107,10 @@ class TrainingCLI:
             learning_rate=train_config.get("learning_rate", 1e-5),
             total_epochs=train_config.get("epochs", 50),
             weight_decay=train_config.get("weight_decay", 0.01),
-            loss_weights=LossWights(
-                l1=train_config.get("w_l1", 1.0), 
-                gradenty=train_config.get("w_grad", 1.0), 
-                ssim=train_config.get("w_ssim", 1.0)
+            loss_weights=LossWeights(
+                l1_weight=train_config.get("w_l1", 1.0), 
+                gradient_weight=train_config.get("w_grad", 1.0), 
+                ssim_weight=train_config.get("w_ssim", 1.0)
             ),
             storage_mode=storage_mode,
             dataset_root=dataset_root_path,

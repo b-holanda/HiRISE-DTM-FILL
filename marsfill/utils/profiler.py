@@ -65,3 +65,10 @@ def get_profile_configuration(
     available_profiles = load_all_profiles(target_directory)
     
     return available_profiles.get(profile_name, None)
+
+
+def get_profile(profile_name: str, profiles_directory: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """
+    Alias simples para manter compatibilidade com o restante do código.
+    """
+    return get_profile_configuration(profile_name, profiles_directory)

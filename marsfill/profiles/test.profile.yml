@@ -28,4 +28,8 @@ fill:
   selected_model: Intel/dpt-large
   tile_size: 512
   padding_size: 128
-  model_path: "outputs/marsfill_model.pth"
+  model_path: "models/marsfill_model.pth"
+  dataset_prefix: "dataset/v1"
+  output_prefix: "filled"
+  local_base_dir: "data"
+  s3_bucket: "hirise-dtm-fill"

@@ -1,0 +1,37 @@
+@startuml TrainPipeline
+title Sequência: ./train.sh (local ou s3)
+
+actor Usuário
+participant "train.sh" as Shell
+participant "TrainingCLI\n(marsfill/cli/train.py)" as CLI
+participant "get_profile" as Profile
+participant "MarsDepthTrainer" as Trainer
+participant "list_parquet_files" as Lister
+participant "DataLoaders\n(StreamingHiRISeDataset)" as Loaders
+participant "CombinedLoss" as Loss
+participant "Storage\n(Local FS ou S3)" as Storage
+
+Usuário -> Shell: ./train.sh --profile <p> --mode <local|s3>
+Shell -> CLI: python marsfill/cli/train.py args
+CLI -> Profile: carregar perfil <p>
+Profile --> CLI: config train (batch, lr, paths)
+CLI -> Trainer: instanciar MarsDepthTrainer(config)
+Trainer -> Trainer: resolver paths\n(train/val, modelo out)
+Trainer -> Lister: listar parquets (train/val)
+Lister --> Trainer: caminhos de parquets
+Trainer -> Loaders: criar DataLoader streaming\n(rank-aware)
+loop Épocas
+  Trainer -> Loaders: batches
+  Trainer -> Trainer: forward DPT + resize
+  Trainer -> Loss: L1 + grad + SSIM
+  Trainer -> Trainer: backward + grad scaler
+  alt validação
+    Trainer -> Trainer: forward val + loss
+  end
+  Trainer -> Storage: salvar checkpoint se melhor
+end
+Trainer --> CLI: terminado
+CLI --> Shell: status
+Shell --> Usuário: modelo salvo (local ou S3)
+
+@enduml

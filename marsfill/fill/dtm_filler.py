@@ -22,23 +22,23 @@ class DTMFiller:
 
     def __init__(
         self,
-        depth_evaluator: Evaluator,
-        context_padding_size: int,
-        processing_tile_size: int,
+        evaluator: Evaluator,
+        padding_size: int,
+        tile_size: int,
         s3_client: Optional[Any] = None
     ) -> None:
         """
         Inicializa o preenchedor de terreno.
 
         Parâmetros:
-            depth_evaluator (Evaluator): Instância da classe avaliadora contendo o modelo de IA carregado.
-            context_padding_size (int): Tamanho da borda extra (padding) para dar contexto ao modelo.
-            processing_tile_size (int): Tamanho do bloco central (tile) onde a predição será efetivamente salva.
-            s3_client (Optional[Any]): Cliente Boto3 para upload S3. Se None, cria um novo se necessário.
+            evaluator (Evaluator): Instância da classe avaliadora contendo o modelo de IA carregado.
+            padding_size (int): Tamanho da borda extra (padding) para dar contexto ao modelo.
+            tile_size (int): Tamanho do bloco central (tile) onde a predição será efetivamente salva.
+            s3_client (Optional[Any]): Cliente Boto3 para upload/download S3. Se None, cria um novo se necessário.
         """
-        self.depth_evaluator = depth_evaluator
-        self.context_padding_size = context_padding_size
-        self.processing_tile_size = processing_tile_size
+        self.depth_evaluator = evaluator
+        self.context_padding_size = padding_size
+        self.processing_tile_size = tile_size
         self.s3_client = s3_client
 
     def _get_s3_client(self) -> Any:
@@ -49,41 +49,80 @@ class DTMFiller:
             self.s3_client = boto3.client('s3')
         return self.s3_client
 
+    def fill(
+        self, 
+        dtm_path: str | Path, 
+        ortho_path: str | Path, 
+        output_root: str,
+        keep_local_output: bool = False
+    ) -> Tuple[str, str, Path, Path, Path]:
+        """
+        Alias para manter compatibilidade com a CLI.
+        """
+        return self.fill_missing_elevation_data(
+            orthophoto_file_path=ortho_path,
+            digital_terrain_model_path=dtm_path,
+            output_destination=output_root,
+            keep_local_output=keep_local_output
+        )
+
+    def _download_if_needed(self, source_uri: str, destination_dir: Path, filename: str) -> Path:
+        """
+        Faz o download de um arquivo S3 para um diretório temporário. Se já for local, apenas retorna o Path.
+        """
+        if not str(source_uri).startswith("s3://"):
+            return Path(source_uri)
+
+        bucket, key = self._parse_s3_uri(str(source_uri))
+        output_path = destination_dir / filename
+        self._get_s3_client().download_file(bucket, key, str(output_path))
+        return output_path
+
     def fill_missing_elevation_data(
         self, 
-        orthophoto_file_path: Path, 
-        digital_terrain_model_path: Path, 
-        output_destination: str
-    ) -> Tuple[str, str]:
+        orthophoto_file_path: str | Path, 
+        digital_terrain_model_path: str | Path, 
+        output_destination: str,
+        keep_local_output: bool = False
+    ) -> Tuple[str, str, Path, Path, Path]:
         """
         Executa o pipeline de preenchimento e salva no destino (Local ou S3).
 
         Parâmetros:
-            orthophoto_file_path (Path): Caminho local para o arquivo GeoTIFF da ortofoto.
-            digital_terrain_model_path (Path): Caminho local para o arquivo GeoTIFF do DTM.
+            orthophoto_file_path: Caminho local ou URI S3 para o arquivo da ortofoto.
+            digital_terrain_model_path: Caminho local ou URI S3 para o arquivo DTM.
             output_destination (str): Caminho do diretório local (ex: 'data/output') ou URI S3 (ex: 's3://bucket/output').
+            keep_local_output (bool): Se True e output for S3, mantém diretório temporário para uso pós-processamento.
 
         Retorno:
-            Tuple[str, str]: Caminhos finais (ou URIs) do DTM preenchido e da máscara.
+            Tuple[str, str, Path, Path, Path]: Caminhos finais (ou URIs) do DTM preenchido e da máscara,
+            além dos caminhos locais efetivos gerados e do DTM original local.
         """
         is_s3_output = str(output_destination).startswith("s3://")
-        
+        temp_workspace: Optional[Path] = None
+
         # Define onde o trabalho pesado do GDAL vai acontecer (sempre localmente)
         if is_s3_output:
-            working_directory = Path(tempfile.mkdtemp())
+            temp_workspace = Path(tempfile.mkdtemp())
+            working_directory = temp_workspace
         else:
             working_directory = Path(output_destination)
             working_directory.mkdir(parents=True, exist_ok=True)
 
+        # Download de entradas caso venham do S3
+        local_ortho = self._download_if_needed(orthophoto_file_path, working_directory, "input_ortho.jp2")
+        local_dtm = self._download_if_needed(digital_terrain_model_path, working_directory, "input_dtm.img")
+        original_dtm_path = local_dtm
+
         # 1. Preparação dos Arquivos de Trabalho
         working_dtm_path, working_mask_path = self._prepare_working_files(
-            digital_terrain_model_path, working_directory
+            local_dtm, working_directory
         )
 
         # 2. Execução do Processamento (GDAL)
         try:
             self._execute_filling_process(
-                orthophoto_file_path, 
+                local_ortho, 
                 working_dtm_path, 
                 working_mask_path
             )
@@ -96,12 +135,12 @@ class DTMFiller:
                 is_s3_output
             )
             
-            return final_dtm_uri, final_mask_uri
+            return final_dtm_uri, final_mask_uri, working_dtm_path, working_mask_path, original_dtm_path
 
         finally:
             # Limpeza de arquivos temporários se estivemos usando S3
-            if is_s3_output and os.path.exists(working_directory):
-                shutil.rmtree(working_directory)
+            if temp_workspace and os.path.exists(temp_workspace) and not keep_local_output:
+                shutil.rmtree(temp_workspace)
 
     def _prepare_working_files(self, source_dtm_path: Path, working_directory: Path) -> Tuple[Path, Path]:
         """
@@ -109,7 +148,7 @@ class DTMFiller:
         """
         base_filename = os.path.basename(source_dtm_path).split(".")[0].lower()
         working_dtm_path = working_directory / f"predicted_{base_filename}.tif"
-        working_mask_path = working_directory / f"mask_{base_filename}.tif"
+        working_mask_path = working_directory / f"mask_predicted_{base_filename}.tif"
 
         if not os.path.exists(working_dtm_path):
             logger.info(f"Copiando DTM original para área de trabalho: {working_dtm_path}")
@@ -192,10 +231,10 @@ class DTMFiller:
         
         # Inferência
         normalized_ortho = self._normalize_image(ortho_crop)
-        predicted_depth_box = self.depth_evaluator.predict(
-            orthoimage=normalized_ortho, 
-            width=bbox['width'], 
-            height=bbox['height']
+        predicted_depth_box = self.depth_evaluator.predict_depth(
+            orthophoto_image=normalized_ortho, 
+            target_width=bbox['width'], 
+            target_height=bbox['height']
         )
         
         # Recorte do centro (remove padding)

@@ -1,0 +1,34 @@
+@startuml FillPipeline
+title Sequência: ./fill.sh (local ou s3)
+
+actor Usuário
+participant "fill.sh" as Shell
+participant "FillCLI\n(marsfill/cli/fill.py)" as CLI
+participant "get_profile" as Profile
+participant "Evaluator\n(marsfill/model/eval.py)" as Eval
+participant "DTMFiller" as Filler
+participant "GDAL + Tiles" as GDAL
+participant "FillerStats" as Stats
+participant "Storage\n(Local FS ou S3)" as Storage
+
+Usuário -> Shell: ./fill.sh --test <id> --profile <p> --mode <local|s3>
+Shell -> CLI: python marsfill/cli/fill.py args
+CLI -> Profile: carregar perfil <p>
+Profile --> CLI: paths (modelo, dataset, output)
+CLI -> Eval: carregar DPT + pesos (local ou S3)
+CLI -> Filler: instanciar com padding/tile
+Filler -> Filler: baixar entradas se modo S3
+Filler -> GDAL: abrir ortho/dtm, grid de tiles
+loop Para cada tile
+  GDAL -> Eval: ortho normalizada
+  Eval --> GDAL: profundidade prevista
+  GDAL -> GDAL: blending e escrita no DTM
+  GDAL -> GDAL: salvar máscara
+end
+Filler -> Storage: enviar outputs (se S3)
+CLI -> Stats: calcular RMSE/MAE/SSIM + plots
+Stats -> Storage: salvar metrics.json e gráfico
+CLI --> Shell: caminhos finais
+Shell --> Usuário: DTM preenchido + métricas
+
+@enduml

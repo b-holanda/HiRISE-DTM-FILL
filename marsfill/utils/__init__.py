@@ -90,6 +90,9 @@ class ApplicationLogger:
         """
         self._internal_logger.error(message, stack_info=True, exc_info=exception_info)
 
+# Alias público usado em todo o projeto
+Logger = ApplicationLogger
+
 def generate_expected_filenames(hirise_id: str) -> Tuple[str, str]:
     """
     Gera os nomes de arquivos esperados para um dado ID HiRISe.

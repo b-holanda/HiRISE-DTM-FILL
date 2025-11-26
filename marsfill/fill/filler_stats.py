@@ -89,7 +89,7 @@ class FillerStats:
         
         return metrics, gt_arr, filled_arr, eval_mask
     
-    def plot_results(self, gt_arr, filled_arr, eval_mask, metrics, filename="visual_comparison.png"):
+    def plot_results(self, gt_arr, filled_arr, eval_mask, metrics, filename="result_comparison.jpg"):
         rows = np.any(eval_mask, axis=1)
         cols = np.any(eval_mask, axis=0)
         y_min, y_max = np.where(rows)[0][[0, -1]]

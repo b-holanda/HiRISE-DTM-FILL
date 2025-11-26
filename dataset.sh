@@ -25,7 +25,7 @@ echo "🗺️  Inicializando pipeline de construção do Dataset Marsfill..."
 
 # 3. Execução do Script Python
 # "$@" repassa todos os argumentos (flags) recebidos pelo shell script para o Python
-python marsfill/cli/build.py "$@"
+python marsfill/cli/dataset.py "$@"
 
 # 4. Captura de Erros
 EXIT_CODE=$?

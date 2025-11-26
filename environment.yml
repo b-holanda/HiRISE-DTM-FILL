@@ -9,6 +9,9 @@ dependencies:
   - scipy
   - scikit-learn
   - gdal
+  - pyarrow
+  - boto3
+  - s3fs
   - pillow
   - tqdm
   - pyyaml
@@ -24,3 +27,4 @@ dependencies:
       - fire
       - nvidia-ml-py
       - bs4
+      - requests

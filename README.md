@@ -2,6 +2,17 @@
 
 -----
 
+## Visão Geral
+
+`marsfill` é um pipeline que pega pares de produtos HiRISE (uma ortoimagem e seu DTM com buracos) e treina um modelo de IA para prever o relevo onde a fotogrametria falhou. Ele funciona em dois modos:
+- **local**: lê/escreve tudo na pasta `./data`.
+- **s3**: lê/escreve direto no bucket (`s3://hirise-dtm-fill` por padrão).
+
+O fluxo completo é:
+1) Buscar pares DTM+ORTHO públicos do PDS HiRISE, alinhar e cortar em blocos 512×512 sem lacunas, salvando em Parquet (treino/validação) e também guardando os pares de teste integrais.
+2) Treinar um modelo baseado no `Intel/dpt-large` (Vision Transformer para profundidade) com perdas L1 + gradiente + SSIM.
+3) Rodar inferência por blocos nas áreas NoData, suavizar bordas e gerar métricas/plots. As saídas são salvas no mesmo modo (local ou S3).
+
 ## Instalação
 
 ```bash
@@ -17,7 +28,9 @@ sudo chmod a+x Miniconda3-latest-Linux-x86_64.sh
 
 source  ~/miniconda3/bin/activate
 
-conda create -n marsfill-env -f environment.yml
+conda env create -n marsfill-env -f environment.yml
+# Se já existir, atualize:
+# conda env update -n marsfill-env -f environment.yml --prune
 
 conda activate marsfill-env
 
@@ -25,48 +38,77 @@ conda activate marsfill-env
 
 ## Uso
 
-### Gerar rotulos de treinamento usando 100 pares de datasets DTM+ORTHO da Hirise
+Todo o pipeline funciona em dois modos: **s3** (dados lidos/escritos direto no bucket) ou **local** (dados em `./data` na raiz do projeto). Os comandos abaixo assumem o perfil `prod`; use `--profile test` para o perfil de teste.
 
----
-É recomendado o seguinte hardware:
-- **Memória RAM***: 32 GB
-- **Núcleos de CPU***: 4
+Diagramas (PlantUML) estão em `docs/diagrams/`:
+- `dataset_sequence.puml`
+- `train_sequence.puml`
+- `fill_sequence.puml`
+
+### 1) Gerar rótulos de treinamento (100 pares DTM+ORTHO)
+
+Requisitos recomendados:
+- **Memória RAM**: 32 GB
+- **Núcleos de CPU**: 4
 - **Espaço em disco**: 2 TB
----
 
 ```bash
-./dataset.sh --profile dev --mode local
+# S3
+./dataset.sh --profile prod --mode s3
+# Local
+./dataset.sh --profile prod --mode local
 ```
 
-### Treinar modelo
+Saídas esperadas:
+- Treino: `s3://hirise-dtm-fill/dataset/v1/train` ou `./data/dataset/v1/train`
+- Validação: `s3://hirise-dtm-fill/dataset/v1/validation` ou `./data/dataset/v1/validation`
+- Teste (arquivos integrais): `s3://hirise-dtm-fill/dataset/v1/test/test-a/{dtm.IMG, ortho.JP2}`, `test-b`, ... ou `./data/dataset/v1/test/...`
 
----
-O modelo base usado é o Intel/DPT-ViT-Large é recomando o seguinte hardware:
-- **GPU**: 4 PLACAS NVIDIA A10G e 24 GB de memória
-- **Memória de GPU**: 96GB
+### 2) Treinar o modelo
+
+Requisitos recomendados (Intel/DPT-ViT-Large):
+- **GPU**: 4× NVIDIA A10G 24 GB
+- **Memória de GPU**: 96 GB
 - **Memória RAM**: 192 GB
-- **Núcleos de CPU***: 48
+- **Núcleos de CPU**: 48
 - **Espaço em disco**: 2 TB
----
 
 ```bash
-./train.sh --profile dev --mode local
+# S3
+./train.sh --profile prod --mode s3
+# Local
+./train.sh --profile prod --mode local
 ```
 
-### Executar modelo
+Entradas: `dataset/v1/train` e `dataset/v1/validation` no bucket ou em `./data`.  
+Saída: `s3://hirise-dtm-fill/models/marsfill_model.pth` ou `./data/models/marsfill_model.pth`.
 
----
-É recomando o seguinte hardware:
-- **GPU**: 1 PLACA NVIDIA T4
+### 3) Executar o modelo (preencher lacunas)
+
+Requisitos recomendados:
+- **GPU**: 1× NVIDIA T4
 - **Memória de GPU**: 24 GB
 - **Memória RAM**: 16 GB
-- **Núcleos de CPU***: 4
+- **Núcleos de CPU**: 4
 - **Espaço em disco**: 100 GB
----
 
 ```bash
-./fill.sh -dtm /home/ubuntu/DTEPC_088676_2540_088162_2540_A01.IMG -ortho /home/ubuntu/ESP_088676_2540_RED_A_01_ORTHO.JP2
+# S3 (usa par test-a, test-b, ...)
+./fill.sh --test a --profile prod --mode s3
+
+# Local
+./fill.sh --test a --profile prod --mode local
 ```
+
+Entradas:
+- Modelo: `s3://hirise-dtm-fill/models/marsfill_model.pth` ou `./data/models/marsfill_model.pth`
+- Dados de teste: `s3://hirise-dtm-fill/dataset/v1/test/test-a/{dtm.IMG,ortho.JP2}` ou `./data/dataset/v1/test/test-a/...`
+
+Saídas:
+- DTM preenchido: `s3://hirise-dtm-fill/filled/test-a/predicted_dtm.tif` ou `./data/filled/test-a/predicted_dtm.tif`
+- Máscara: `.../mask_predicted_dtm.tif`
+- Métricas: `.../metrics.json`
+- Gráficos: `.../result_*.jpg`
 
 -----
 
