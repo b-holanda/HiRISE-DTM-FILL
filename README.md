@@ -1,4 +1,6 @@
-# marsfill
+# marsfill ![CI](https://img.shields.io/github/actions/workflow/status/b-holanda/HiRISE-DTM-FILL/coverage.yml?branch=main&label=tests%2Fcoverage) ![Coverage Pages](https://img.shields.io/badge/GitHub%20Pages-coverage-blue)
+
+[Página do projeto (coverage report)](https://b-holanda.github.io/HiRISE-DTM-FILL/)
 
 -----
 

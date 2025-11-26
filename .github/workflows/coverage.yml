@@ -1,0 +1,59 @@
+name: Test and Publish Coverage
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Miniconda
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          activate-environment: marsfill-env
+          environment-file: environment.yml
+          auto-activate-base: false
+          python-version: "3.11"
+
+      - name: Run tests with coverage
+        shell: bash -l {0}
+        run: |
+          pytest --cov --cov-report=term-missing --cov-report=html:htmlcov
+
+      - name: Configure Pages
+        if: github.ref == 'refs/heads/main'
+        id: pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload coverage artifact
+        if: github.ref == 'refs/heads/main'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: htmlcov
+
+  deploy:
+    needs: tests
+    if: github.ref == 'refs/heads/main'
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
