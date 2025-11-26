@@ -2,10 +2,14 @@ make:
   urls_to_scan:
     - "https://www.uahirise.org/PDS/DTM/PSP/"
     - "https://www.uahirise.org/PDS/DTM/ESP/"
-  samples: 10
-  output: "datasets"
+  samples: 100 
+  output: "data/dataset/v1/"
   tile_size: 512
   stride: 256
+  s3_bucket: "hirise-dtm-fill" 
+  s3_prefix: "dataset/v1/"
+  batch_size: 500
+  max_workers: null
 
 train:
   threads: 4
@@ -17,6 +21,8 @@ train:
   w_l1: 0.6
   w_grad: 0.3
   w_ssim: 0.1
+  s3_bucket: "hirise-dtm-fill"
+  local_data_dir: "data"
 
 fill:
   selected_model: Intel/dpt-large

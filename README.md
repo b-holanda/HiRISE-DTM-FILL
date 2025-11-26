@@ -17,39 +17,55 @@ sudo chmod a+x Miniconda3-latest-Linux-x86_64.sh
 
 source  ~/miniconda3/bin/activate
 
-
-conda create -n marsfill-env -c conda-forge python=3.11 gdal numpy
+conda create -n marsfill-env -f environment.yml
 
 conda activate marsfill-env
-
-conda install -c conda-forge libgdal-jp2openjpeg
-
-pip install -e .
 
 ```
 
 ## Uso
 
+### Gerar rotulos de treinamento usando 100 pares de datasets DTM+ORTHO da Hirise
+
+---
+É recomendado o seguinte hardware:
+- **Memória RAM***: 32 GB
+- **Núcleos de CPU***: 4
+- **Espaço em disco**: 2 TB
+---
+
 ```bash
-marsfill --help
+./dataset.sh --profile dev --mode local
 ```
 
-### Gerar dataset usando 100 pares DTM+ORTHO da Hirise
+### Treinar modelo
+
+---
+O modelo base usado é o Intel/DPT-ViT-Large é recomando o seguinte hardware:
+- **GPU**: 4 PLACAS NVIDIA A10G e 24 GB de memória
+- **Memória de GPU**: 96GB
+- **Memória RAM**: 192 GB
+- **Núcleos de CPU***: 48
+- **Espaço em disco**: 2 TB
+---
 
 ```bash
-marsfill dataset build
+./train.sh --profile dev --mode local
 ```
 
-```bash
-marsfill model train
-```
+### Executar modelo
+
+---
+É recomando o seguinte hardware:
+- **GPU**: 1 PLACA NVIDIA T4
+- **Memória de GPU**: 24 GB
+- **Memória RAM**: 16 GB
+- **Núcleos de CPU***: 4
+- **Espaço em disco**: 100 GB
+---
 
 ```bash
-marsfill model test
-```
-
-```bash
-marsfill fill --source /seu/dtm.IMG --out /caminho/saida/dtm_filled.IMG
+./fill.sh -dtm /home/ubuntu/DTEPC_088676_2540_088162_2540_A01.IMG -ortho /home/ubuntu/ESP_088676_2540_RED_A_01_ORTHO.JP2
 ```
 
 -----

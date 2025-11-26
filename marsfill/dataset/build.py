@@ -1,316 +1,404 @@
 import os
-import time
 import requests
 import random
-import shutil
-
+import boto3
+import io
+import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 from pathlib import Path
 import numpy as np
 from osgeo import gdal
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from typing import Optional, Tuple, List, Dict, Any
+import zipfile
+import shutil
+import tempfile
 
 from marsfill.utils import Logger
 from marsfill.dataset.hirise_indexer import ProductPair, HirisePDSIndexerDFS
 
 gdal.UseExceptions()
-
 logger = Logger()
 
-class Build:
+class DatasetBuilder:
     def __init__(
             self, 
-            urls_to_scan: list[str], 
-            download_dir: Path,
-            samples: int,
+            urls_to_scan: List[str], 
+            total_samples: int,
             tile_size: int,
-            stride: int
+            stride_size: int,
+            download_directory: Optional[Path] = None, 
+            s3_bucket_name: Optional[str] = None,
+            s3_prefix: str = "dataset/v1/",
+            batch_size: int = 500,
+            max_workers: Optional[int] = None,
+            s3_client: Optional[Any] = None
         ) -> None:
-        self._urls_to_scan = urls_to_scan
-        self._download_dir = download_dir
-        self._samples = samples
-        self._tile_size = tile_size
-        self._stride = stride
-        self._assignments = []
+        """
+        Inicializa o construtor do dataset.
 
-    def _list_datasets(self) -> list[ProductPair]:
-        indexer = HirisePDSIndexerDFS(self._urls_to_scan)
-
-        return indexer.index_pairs(max_pairs=self._samples)
-    def _download_candidate(
-        self, candidate: str, out_dir: Path, retries: int = 3, backoff_factor: float = 0.5
-    ) -> None:
-        logger.info(f"Baixando: {os.path.basename(candidate)}...")
-
-        for attempt in range(retries):
-            try:
-                with requests.get(candidate, stream=True, timeout=(15, 300)) as r:
-                    r.raise_for_status()
-
-                    with open(out_dir, 'wb') as f:
-                        for chunk in r.iter_content(chunk_size=8192):
-                            f.write(chunk)
-                        
-                    logger.info(f"Download concluído para: {os.path.basename(candidate)}")
-                    return
-
-            except (requests.exceptions.ConnectionError,
-                    requests.exceptions.ReadTimeout,
-                    requests.exceptions.ChunkedEncodingError,
-                    BrokenPipeError) as e:
-
-                logger.info(
-                    f"Tentativa {attempt + 1}/{retries} falhou para {candidate} com erro: {e}"
-                )
-
-                if attempt + 1 == retries:
-                    logger.info(f"Falha final no download após {retries} tentativas.")
-                    raise e
+        Argumentos:
+            urls_to_scan (List[str]): Lista de URLs base para escanear os produtos HiRISE.
+            total_samples (int): Número total de pares de produtos para processar.
+            tile_size (int): Tamanho da janela (largura e altura) para o recorte das imagens.
+            stride_size (int): Passo do deslocamento da janela deslizante.
+            download_directory (Optional[Path]): Caminho local para salvar os dados. Se None, usa S3.
+            s3_bucket_name (Optional[str]): Nome do bucket S3 para salvar os dados. Obrigatório se download_directory for None.
+            s3_prefix (str): Prefixo (pasta) dentro do bucket ou diretório local.
+            batch_size (int): Quantidade de tiles para acumular antes de salvar um arquivo parquet.
+            max_workers (Optional[int]): Número máximo de processos paralelos.
+            s3_client (Optional[Any]): Instância de cliente boto3 S3 injetada para facilitar testes.
+        """
+        self.urls_to_scan = urls_to_scan
+        self.total_samples = total_samples
+        self.tile_size = tile_size
+        self.stride_size = stride_size
         
-                sleep_time = backoff_factor * (2 ** attempt)
-                logger.info(f"Aguardando {sleep_time:.2f}s para tentar novamente...")
-                time.sleep(sleep_time)
+        self.download_directory = download_directory
+        self.s3_bucket_name = s3_bucket_name
+        self.s3_prefix = s3_prefix if s3_prefix.endswith("/") else f"{s3_prefix}/"
+        self.batch_size = batch_size
+        self.max_workers = max_workers
+        self.assignments = []
+        
+        if self.download_directory is None:
+            if not self.s3_bucket_name:
+                raise ValueError("Para salvar no S3, forneça o 's3_bucket_name'.")
+            
+            self.s3_client = s3_client if s3_client else boto3.client('s3')
+            logger.info(f"Modo Cloud: Bucket='{self.s3_bucket_name}', Prefix='{self.s3_prefix}'")
+        else:
+            self.s3_client = None
+            logger.info(f"Modo Local: '{self.download_directory}'")
 
-            except requests.exceptions.HTTPError as e:
-                status = e.response.status_code
-                logger.info(f"Erro HTTP {status} para {candidate}. Não haverá retentativa.")
-                raise e
+    def _list_datasets(self) -> List[ProductPair]:
+        """
+        Escaneia as URLs fornecidas e retorna uma lista de pares de produtos (Ortho e DTM).
 
-    def _align_dtm_to_ortho(self, dtm: Path, ortho: Path, aligned: Path) -> None:
-        logger.info("Gerando novo DTM alinhado com o arquivo orthoretificado")
-
-        ortho_dataset = gdal.Open(str(ortho))
-        ortho_geo_transform = ortho_dataset.GetGeoTransform()
-        ortho_geo_projection = ortho_dataset.GetProjection()
-
-        x_res = ortho_geo_transform[1]
-        y_res = ortho_geo_transform[5]
-        x_min = ortho_geo_transform[0]
-        y_max = ortho_geo_transform[3]
-
-        x_max = x_min + ortho_dataset.RasterXSize * x_res
-        y_min = y_max + ortho_dataset.RasterYSize * y_res
-
-        ortho_dataset = None
-
-        gdal.Warp(
-            str(aligned),
-            str(dtm),
-            format="GTiff",
-            outputBounds=[x_min, y_min, x_max, y_max],
-            xRes=x_res,
-            yRes=abs(y_res),
-            dstSRS=ortho_geo_projection,
-            resampleAlg='cubic',
-            creationOptions=['COMPRESS=LZW', 'BIGTIFF=YES'],
-        )
-
-        os.remove(dtm)
-
-    def _normalize_pair(self, ortho_tile_arr, dtm_tile_arr):
-        """Normaliza um par de blocos (tiles) já lidos do disco."""
-
-        ortho_tile = ortho_tile_arr.astype(np.float32)
-        dtm_tile = dtm_tile_arr.astype(np.float32)
-
-        min_o, max_o = ortho_tile.min(), ortho_tile.max()
-        ortho_normalized = (ortho_tile - min_o) / (max_o - min_o + 1e-8)
-
-        min_d, max_d = dtm_tile.min(), dtm_tile.max()
-        dtm_normormalized = (dtm_tile - min_d) / (max_d - min_d + 1e-8)
-
-        return ortho_normalized, dtm_normormalized
+        Retorna:
+            List[ProductPair]: Lista contendo objetos com as URLs dos pares encontrados.
+        """
+        indexer = HirisePDSIndexerDFS(self.urls_to_scan)
+        return indexer.index_pairs(max_pairs=self.total_samples)
 
     def _prepare_assignments(self) -> None:
-        logger.info(
-            f"Preparando {self._samples} atribuições (80% treino, 10% teste, 10% validação)"
-        )
+        """
+        Define aleatoriamente quais amostras pertencerão aos conjuntos de treino, teste e validação.
+        A distribuição é fixa em 80% treino, 10% teste e 10% validação.
+        """
+        logger.info(f"Preparando {self.total_samples} atribuições...")
+        test_count = int(np.round(0.1 * self.total_samples))
+        validation_count = int(np.round(0.1 * self.total_samples))
+        train_count = self.total_samples - test_count - validation_count
 
-        test_count = int(np.round(0.1 * self._samples))
-        val_count = int(np.round(0.1 * self._samples))
-
-        train_count = self._samples - test_count - val_count
-
-        logger.info(
-            f"Contagens calculadas: Treino={train_count}, Teste={test_count}, Validação={val_count}"
-        )
-
-        self._assignments = (
+        self.assignments = (
             ['train'] * train_count +
             ['test'] * test_count +
-            ['validation'] * val_count
+            ['validation'] * validation_count
         )
+        random.shuffle(self.assignments)
+
+    @staticmethod
+    def worker_process_pair(pair_data: Dict[str, Any], tile_size: int, stride_size: int) -> Tuple[str, List[Dict[str, Any]]]:
+        """
+        Processa um par de imagens (Orthoimagem e DTM) em um processo separado.
+        Realiza o download em memória, alinhamento (warp), recorte (tiling) e normalização.
+
+        Argumentos:
+            pair_data (Dict[str, Any]): Dicionário contendo 'dtm_url', 'ortho_url' e 'split'.
+            tile_size (int): Tamanho do recorte quadrado.
+            stride_size (int): Tamanho do passo para recorte.
+
+        Retorna:
+            Tuple[str, List[Dict[str, Any]]]: Uma tupla contendo o nome do split (ex: 'train') e uma lista de dicionários com os tiles processados.
+        """
+        digital_terrain_model_url = pair_data['dtm_url']
+        ortho_image_url = pair_data['ortho_url']
+        dataset_split = pair_data['split']
+        pair_identifier = os.path.basename(ortho_image_url).replace(".JP2", "")
         
-        # 4. Embaralhar a lista para garantir aleatoriedade
-        random.shuffle(self._assignments)
-
-    def _save_tile(self, normalized, base, projection, x, y, nodata, out_path):
-        new_geo_transform = (
-            base[0] + x * base[1],
-            base[1],
-            base[2],
-            base[3] + y * base[5],
-            base[4],
-            base[5]
-        )
-
-        driver = gdal.GetDriverByName('GTiff')
-
-        out_dataset = driver.Create(
-            str(out_path), 
-            normalized.shape[1],
-            normalized.shape[0],
-            1,
-            gdal.GDT_Float32,
-            options=['COMPRESS=LZW', 'BIGTIFF=YES'],
-        )
-
-        out_dataset.SetGeoTransform(new_geo_transform)
-        out_dataset.SetProjection(projection)
-
-        out_band = out_dataset.GetRasterBand(1)
-
-        if nodata is not None:
-            out_band.SetNoDataValue(nodata)
-
-        out_band.WriteArray(normalized)
-        out_band.FlushCache()
-        out_dataset = None
-
-    def _process_tiles(self, dtm: Path, ortho: Path, out_dir: Path, count: int):
-        ortho_dataset = gdal.Open(str(ortho))
-        dtm_dataset = gdal.Open(str(dtm))
-
-        # Pega as infos dos *datasets*, não de arrays em memória
-        base_geo_transform = ortho_dataset.GetGeoTransform()
-        base_projection = ortho_dataset.GetProjection()
-        nodata_val = dtm_dataset.GetRasterBand(1).GetNoDataValue()
-
-        # Pega as dimensões dos datasets
-        width = ortho_dataset.RasterXSize
-        height = ortho_dataset.RasterYSize
-
-        if nodata_val is None:
-            nodata_val = -3.4028234663852886e+38 
+        virtual_ortho_path = f"/vsimem/{pair_identifier}_ortho.tif"
+        virtual_dtm_path = f"/vsimem/{pair_identifier}_dtm.img"
+        virtual_aligned_path = f"/vsimem/{pair_identifier}_aligned.tif"
         
-        tile_count = 0
+        processed_results = []
         
-        # Pega as bandas (camadas) dos arquivos para leitura
-        dtm_band = dtm_dataset.GetRasterBand(1)
-        ortho_band = ortho_dataset.GetRasterBand(1)
+        try:
+            def download_content_as_bytes(url: str) -> bytes:
+                with requests.get(url, stream=True, timeout=(15, 300)) as response:
+                    response.raise_for_status()
+                    return response.content
 
-        logger.info(f"Iniciando processamento de blocos para {ortho}...")
+            ortho_bytes = download_content_as_bytes(ortho_image_url)
+            dtm_bytes = download_content_as_bytes(digital_terrain_model_url)
 
-        for y in range(0, height - self._tile_size, self._stride):
-            for x in range(0, width - self._tile_size, self._stride):
-                dtm_tile_arr = dtm_band.ReadAsArray(
-                    x, y, self._tile_size, self._tile_size
+            gdal.FileFromMemBuffer(virtual_ortho_path, ortho_bytes)
+            gdal.FileFromMemBuffer(virtual_dtm_path, dtm_bytes)
+
+            ortho_dataset = gdal.Open(virtual_ortho_path)
+            geo_transform = ortho_dataset.GetGeoTransform()
+            projection_ref = ortho_dataset.GetProjection()
+            raster_width = ortho_dataset.RasterXSize
+            raster_height = ortho_dataset.RasterYSize
+            
+            x_min = geo_transform[0]
+            x_max = x_min + raster_width * geo_transform[1]
+            y_max = geo_transform[3]
+            y_min = y_max + raster_height * geo_transform[5]
+
+            gdal.Warp(
+                virtual_aligned_path,
+                virtual_dtm_path,
+                format="GTiff",
+                outputBounds=[x_min, y_min, x_max, y_max],
+                xRes=geo_transform[1],
+                yRes=abs(geo_transform[5]),
+                dstSRS=projection_ref,
+                resampleAlg='cubic',
+                creationOptions=['COMPRESS=LZW']
+            )
+
+            aligned_dataset = gdal.Open(virtual_aligned_path)
+            dtm_band = aligned_dataset.GetRasterBand(1)
+            ortho_band = ortho_dataset.GetRasterBand(1)
+            
+            nodata_value = dtm_band.GetNoDataValue()
+            if nodata_value is None: 
+                nodata_value = -3.4028234663852886e+38
+
+            for y_coordinate in range(0, raster_height - tile_size, stride_size):
+                for x_coordinate in range(0, raster_width - tile_size, stride_size):
+                    dtm_tile = dtm_band.ReadAsArray(x_coordinate, y_coordinate, tile_size, tile_size)
+                    
+                    mask = (dtm_tile == nodata_value) | np.isnan(dtm_tile)
+                    if np.any(mask):
+                        continue
+
+                    ortho_tile = ortho_band.ReadAsArray(x_coordinate, y_coordinate, tile_size, tile_size)
+
+                    ortho_tile = ortho_tile.astype(np.float32)
+                    dtm_tile = dtm_tile.astype(np.float32)
+
+                    min_ortho, max_ortho = ortho_tile.min(), ortho_tile.max()
+                    ortho_normalized = (ortho_tile - min_ortho) / (max_ortho - min_ortho + 1e-8)
+
+                    min_dtm, max_dtm = dtm_tile.min(), dtm_tile.max()
+                    dtm_normalized = (dtm_tile - min_dtm) / (max_dtm - min_dtm + 1e-8)
+
+                    processed_results.append({
+                        'pair_id': pair_identifier,
+                        'tile_x': x_coordinate,
+                        'tile_y': y_coordinate,
+                        'ortho_bytes': ortho_normalized.tobytes(),
+                        'dtm_bytes': dtm_normalized.tobytes()
+                    })
+
+            ortho_dataset = None
+            aligned_dataset = None
+
+        except Exception as error:
+            print(f"Erro worker {pair_identifier}: {error}")
+        
+        finally:
+            gdal.Unlink(virtual_ortho_path)
+            gdal.Unlink(virtual_dtm_path)
+            gdal.Unlink(virtual_aligned_path)
+
+        return dataset_split, processed_results
+
+    def _save_batch(self, data_list: List[Dict], dataset_split: str, batch_index: int) -> None:
+        """
+        Salva um lote de dados processados em arquivo Parquet (Local ou S3).
+
+        Argumentos:
+            data_list (List[Dict]): Lista de tiles processados.
+            dataset_split (str): O conjunto de dados (train, test, validation).
+            batch_index (int): O índice sequencial deste lote.
+        """
+        if not data_list:
+            return
+
+        dataframe = pd.DataFrame(data_list)
+        pyarrow_table = pa.Table.from_pandas(dataframe)
+        file_name = f"data_part_{batch_index:05d}.parquet"
+        
+        if self.download_directory:
+            try:
+                full_prefix = Path(self.s3_prefix.strip("/")) / dataset_split
+                local_subdirectory = self.download_directory / full_prefix
+                local_subdirectory.mkdir(parents=True, exist_ok=True)
+                
+                output_path = local_subdirectory / file_name
+                pq.write_table(pyarrow_table, output_path, compression='snappy')
+                logger.info(f"💾 [{dataset_split.upper()}] Salvo: {output_path} ({len(dataframe)} tiles)")
+            except Exception as error:
+                logger.error(f"Falha ao salvar no disco local: {error}")
+
+        else:
+            try:
+                output_buffer = io.BytesIO()
+                pq.write_table(pyarrow_table, output_buffer, compression='snappy')
+                output_buffer.seek(0)
+                
+                s3_key = f"{self.s3_prefix}{dataset_split}/{file_name}"
+                
+                self.s3_client.put_object(
+                    Bucket=self.s3_bucket_name,
+                    Key=s3_key,
+                    Body=output_buffer
                 )
+                logger.info(f"☁️ [{dataset_split.upper()}] S3 Upload: {s3_key} ({len(dataframe)} tiles)")
+            except Exception as error:
+                logger.error(f"Falha upload S3: {error}")
 
-                nodata_mask = (dtm_tile_arr == nodata_val) | np.isnan(dtm_tile_arr)
-                if np.any(nodata_mask):
-                    logger.info("Pulando bloco pois contém nodata")
+    def _package_assets(self) -> None:
+        """
+        Compacta os datasets gerados (train, test, validation) em arquivos .zip.
+        Se estiver rodando em modo S3, baixa os parquets, zipa e faz upload do zip.
+        Se local, apenas cria o zip no diretório.
+        """
+        logger.info("📦 Iniciando empacotamento de assets (Zip)...")
+        dataset_splits = ['train', 'validation', 'test']
+
+        if self.download_directory:
+            assets_directory = self.download_directory / self.s3_prefix.strip("/") / "assets"
+            assets_directory.mkdir(parents=True, exist_ok=True)
+
+            for split_name in dataset_splits:
+                source_directory = self.download_directory / self.s3_prefix.strip("/") / split_name
+                if not source_directory.exists():
                     continue
 
-                ortho_tile_arr = ortho_band.ReadAsArray(
-                    x, y, self._tile_size, self._tile_size
+                output_zip_path = assets_directory / split_name
+                logger.info(f"   Compactando {split_name} em {output_zip_path}.zip...")
+                
+                shutil.make_archive(
+                    base_name=str(output_zip_path), 
+                    format='zip', 
+                    root_dir=source_directory
                 )
+                logger.info(f"✅ {split_name}.zip criado com sucesso (Local).")
 
-                logger.info(f"Normalizando bloco {tile_count}")
+        else:
+            with tempfile.TemporaryDirectory() as temporary_directory:
+                temporary_path = Path(temporary_directory)
+                
+                for split_name in dataset_splits:
+                    s3_source_prefix = f"{self.s3_prefix}{split_name}/"
+                    logger.info(f"   Processando {split_name} no S3...")
+                    
+                    paginator = self.s3_client.get_paginator('list_objects_v2')
+                    pages = paginator.paginate(Bucket=self.s3_bucket_name, Prefix=s3_source_prefix)
+                    
+                    found_files_keys = []
+                    for page in pages:
+                        for obj in page.get('Contents', []):
+                            found_files_keys.append(obj['Key'])
+                    
+                    if not found_files_keys:
+                        logger.info(f"   Nenhum arquivo encontrado para {split_name}, pulando.")
+                        continue
 
-                ortho_normalized, dtm_normormalized = self._normalize_pair(
-                    ortho_tile_arr=ortho_tile_arr, 
-                    dtm_tile_arr=dtm_tile_arr
-                )
+                    local_zip_path = temporary_path / f"{split_name}.zip"
+                    
+                    with zipfile.ZipFile(local_zip_path, 'w', zipfile.ZIP_STORED) as zip_file_handle:
+                        for file_key in found_files_keys:
+                            file_name = os.path.basename(file_key)
+                            
+                            try:
+                                s3_object = self.s3_client.get_object(Bucket=self.s3_bucket_name, Key=file_key)
+                                file_content = s3_object['Body'].read()
+                                zip_file_handle.writestr(file_name, file_content)
+                            except Exception as error:
+                                logger.error(f"Erro ao baixar {file_key} para zip: {error}")
 
-                ortho_tile_path = out_dir / f"ORTHO_P{count}_T{tile_count}.tif"
-                dtm_tile_path = out_dir / f"DTM_P{count}_T{tile_count}.tif"
-                output_nodata = -9999.0
-
-                self._save_tile(
-                    normalized=ortho_normalized, 
-                    base=base_geo_transform, 
-                    projection=base_projection, 
-                    x=x, 
-                    y=y, 
-                    nodata=output_nodata, 
-                    out_path=ortho_tile_path
-                )
-                self._save_tile(
-                    normalized=dtm_normormalized,
-                    base=base_geo_transform, 
-                    projection=base_projection, 
-                    x=x, 
-                    y=y, 
-                    nodata=output_nodata, 
-                    out_path=dtm_tile_path
-                )
-
-                tile_count += 1
-
-                if tile_count > 100:
-                    break
-
-        ortho_dataset = None
-        dtm_dataset = None
-        
-        logger.info(f"Processamento de blocos concluído. {tile_count} blocos gerados.")
-        return tile_count
+                    s3_destination_key = f"{self.s3_prefix}assets/{split_name}.zip"
+                    file_size_mb = os.path.getsize(local_zip_path) / 1e6
+                    logger.info(f"   Enviando {split_name}.zip para o S3 ({file_size_mb:.2f} MB)...")
+                    
+                    try:
+                        with open(local_zip_path, 'rb') as file_pointer:
+                            self.s3_client.put_object(
+                                Bucket=self.s3_bucket_name,
+                                Key=s3_destination_key,
+                                Body=file_pointer
+                            )
+                        logger.info(f"✅ Upload concluído: s3://{self.s3_bucket_name}/{s3_destination_key}")
+                    except Exception as error:
+                        logger.error(f"Erro no upload do zip: {error}")
 
     def run(self) -> None:
-        logger.info("Iniciando indexação de datasets")
-
+        """
+        Executa o pipeline completo:
+        1. Lista datasets.
+        2. Atribui splits (treino/teste).
+        3. Processa imagens em paralelo.
+        4. Salva lotes em parquet.
+        5. Empacota resultados em ZIP.
+        """
+        logger.info("Iniciando pipeline...")
         datasets = self._list_datasets()
-
-        logger.info(f"Indexados {len(datasets)} datasets")
+        logger.info(f"Indexados {len(datasets)} pares")
 
         self._prepare_assignments()
 
-        count = 1
-
+        tasks = []
         for pair in datasets:
-            dtm_candidate = pair.dtm_url
-            ortho_candidate = pair.ortho_url
+            destination_split = self.assignments.pop() if self.assignments else "train"
+            tasks.append({
+                'dtm_url': pair.dtm_url,
+                'ortho_url': pair.ortho_url,
+                'split': destination_split
+            })
 
-            if not dtm_candidate or not ortho_candidate:
-                logger.info(f"Par incompleto pulado. DTM: {dtm_candidate}, ORTHO: {ortho_candidate}")
-                continue
+        data_buffers = {
+            'train': [],
+            'validation': [],
+            'test': []
+        }
+        
+        batch_counters = {
+            'train': 0,
+            'validation': 0,
+            'test': 0
+        }
 
-            download_sources = self._download_dir / "sources" / str(count) 
+        active_workers = self.max_workers if self.max_workers else (os.cpu_count() or 1)
+        logger.info(f"Workers: {active_workers} | Batch Size: {self.batch_size}")
 
-            if not self._assignments:
-                logger.info("Lista de atribuições vazia. Usando 'train' como padrão.")
-                destination = "train"
-            else:
-                destination = self._assignments.pop()
+        with ProcessPoolExecutor(max_workers=active_workers) as executor:
+            futures = [
+                executor.submit(self.worker_process_pair, task, self.tile_size, self.stride_size) 
+                for task in tasks
+            ]
 
-            tiles_dir = self._download_dir / destination
+            for future in as_completed(futures):
+                try:
+                    split_name, tiles_list = future.result()
+                    
+                    if tiles_list:
+                        data_buffers[split_name].extend(tiles_list)
+                        if len(data_buffers[split_name]) >= self.batch_size:
+                            self._save_batch(
+                                data_list=data_buffers[split_name], 
+                                dataset_split=split_name, 
+                                batch_index=batch_counters[split_name]
+                            )
+                            data_buffers[split_name] = []
+                            batch_counters[split_name] += 1
+                            
+                except Exception as error:
+                    logger.error(f"Erro no loop principal: {error}")
 
-            download_sources.mkdir(exist_ok=True, parents=True)
-            tiles_dir.mkdir(exist_ok=True, parents=True)
+        for split_name, buffer_data in data_buffers.items():
+            if buffer_data:
+                self._save_batch(
+                    data_list=buffer_data, 
+                    dataset_split=split_name, 
+                    batch_index=batch_counters[split_name]
+                )
 
-            source_dtm_path = download_sources / os.path.basename(dtm_candidate)
-            source_ortho_path = download_sources / os.path.basename(ortho_candidate)
-            source_dtm_aligned = download_sources / "DTM_aligned.tif"
+        self._package_assets()
 
-            source_dtm_path.touch()
-            source_ortho_path.touch()
-            source_dtm_aligned.touch()
-
-            try:
-                logger.info(f"Fazendo download par [{count}/{self._samples}]")
-
-                self._download_candidate(candidate=dtm_candidate, out_dir=source_dtm_path)
-                self._download_candidate(candidate=ortho_candidate, out_dir=source_ortho_path)
-
-                self._align_dtm_to_ortho(dtm=source_dtm_path, ortho=source_ortho_path, aligned=source_dtm_aligned)
-
-                self._process_tiles(dtm=source_dtm_aligned, ortho=source_ortho_path, out_dir=tiles_dir, count=count)
-
-            except Exception as e:
-                logger.error(f"Falha ao processar o par {count}: {e}", exc_info=True)
-                if tiles_dir.exists():
-                    shutil.rmtree(tiles_dir)
-                raise e
-            finally:
-                if download_sources.exists():
-                    shutil.rmtree(download_sources)
-                count += 1
+        logger.info("Processamento finalizado!")
