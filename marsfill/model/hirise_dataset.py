@@ -2,7 +2,7 @@ import torch
 from torch.utils.data import IterableDataset, get_worker_info
 import pyarrow.parquet as parquet
 import numpy as np
-from typing import List, Tuple, Iterator, Optional
+from typing import List, Tuple, Iterator
 from transformers import DPTImageProcessor
 
 

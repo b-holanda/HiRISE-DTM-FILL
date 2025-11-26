@@ -1,7 +1,7 @@
 import argparse
 import sys
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional
 
 from marsfill.dataset.build import DatasetBuilder
 from marsfill.utils import Logger

@@ -1,5 +1,3 @@
-import os
-from pathlib import Path
 
 from marsfill.utils.profiler import load_all_profiles, get_profile
 

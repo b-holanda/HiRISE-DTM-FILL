@@ -253,7 +253,7 @@ class MarsDepthTrainer:
 
             with tempfile.NamedTemporaryFile(suffix=".pth", delete=True) as temporary_file:
                 torch.save(model_to_save.state_dict(), temporary_file.name)
-                self.logger.info(f"Salvamento temporário concluído. Iniciando upload para S3...")
+                self.logger.info("Salvamento temporário concluído. Iniciando upload para S3...")
                 self._upload_file_to_s3(temporary_file.name, filename)
 
     def _execute_training_step(self, data_loader: DataLoader) -> float:
@@ -386,7 +386,7 @@ class MarsDepthTrainer:
         Executa o loop principal de treinamento, orquestrando as épocas, validação, early stopping e salvamento do modelo.
         """
         if self.is_master_process:
-            self.logger.info(f"Iniciando loop de treinamento...")
+            self.logger.info("Iniciando loop de treinamento...")
 
         training_loader, validation_loader = self.create_dataloaders()
 

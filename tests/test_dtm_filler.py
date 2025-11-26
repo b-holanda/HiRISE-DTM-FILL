@@ -1,6 +1,5 @@
 from pathlib import Path
 
-import pytest
 
 from marsfill.fill.dtm_filler import DTMFiller
 

@@ -1,5 +1,4 @@
 import numpy as np
-import torch
 
 from marsfill.fill import filler_stats
 

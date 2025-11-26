@@ -6,7 +6,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 import torch
 import json
-import os
 from torchmetrics.image import StructuralSimilarityIndexMeasure
 from osgeo import gdal
 

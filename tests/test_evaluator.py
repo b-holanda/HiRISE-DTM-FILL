@@ -1,5 +1,3 @@
-import os
-from pathlib import Path
 
 import numpy as np
 import torch
@@ -85,7 +83,7 @@ def test_evaluator_s3_download(monkeypatch, tmp_path):
         eval_module.DPTImageProcessor, "from_pretrained", FakeProcessor.from_pretrained
     )
 
-    evaluator = eval_module.Evaluator(
+    eval_module.Evaluator(
         pretrained_model_name=eval_module.AvailableModels.INTEL_DPT_LARGE,
         model_path_uri="s3://bucket/model.pth",
     )

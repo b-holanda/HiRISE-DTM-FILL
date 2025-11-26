@@ -1,4 +1,3 @@
-from types import SimpleNamespace
 
 from marsfill.dataset.hirise_indexer import HirisePDSIndexerDFS
 

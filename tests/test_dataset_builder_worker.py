@@ -1,4 +1,3 @@
-import types
 import numpy as np
 
 from marsfill.dataset.build import DatasetBuilder
