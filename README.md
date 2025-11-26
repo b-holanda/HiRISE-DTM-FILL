@@ -15,6 +15,29 @@ O fluxo completo é:
 2) Treinar um modelo baseado no `Intel/dpt-large` (Vision Transformer para profundidade) com perdas L1 + gradiente + SSIM.
 3) Rodar inferência por blocos nas áreas NoData, suavizar bordas e gerar métricas/plots. As saídas são salvas no mesmo modo (local ou S3).
 
+## Arquitetura
+
+- **Visão Geral**  
+  A arquitetura do `marsfill` é organizada em três camadas principais:
+  1. **Pipeline de Dados (ETL)**: localiza pares HiRISE (DTM + ORTHO) no repositório público, baixa, alinha, recorta em blocos e normaliza, salvando tudo em um formato eficiente (Parquet) para treino/validação e guardando também alguns pares integrais de teste.
+  2. **Treinamento de Modelo (DPT-ViT)**: usa os blocos gerados para fazer fine-tuning de um modelo de profundidade monocular baseado em Vision Transformer (`Intel/dpt-large`), com uma função de perda que combina erro por pixel, gradiente de relevo e similaridade estrutural.
+  3. **Preenchimento de DTMs (Inference + Pós-processamento)**: aplica o modelo treinado sobre DTMs com lacunas, trabalhando em tiles com padding de contexto, recalibra as predições para o intervalo real do DTM original e faz um blending suave nas bordas para evitar costuras visíveis.
+
+  Todo esse fluxo é parametrizado por perfis YAML (ex.: `prod`, `test`), e cada etapa pode operar tanto em modo local (estrutura de pastas em `./data`) quanto em modo S3 (bucket `s3://hirise-dtm-fill`), sem alterar o código principal.
+
+- **Sequência do Pipeline**  
+  ![Dataset Sequence](docs/images/dataset_sequence.png)  
+  *Mostra o ETL de dados: varredura do PDS HiRISE, download/alinhamento com GDAL, tiling sem NoData e salvamento em Parquet/ZIP (local ou S3), incluindo cópia dos pares de teste integrais.*
+  ![Train Sequence](docs/images/train_sequence.png)  
+  *Orquestração de treinamento: carga de perfil, resolução de caminhos local/S3, criação de DataLoaders streaming, loop de épocas com perda combinada e checkpoint do melhor modelo.*
+  ![Fill Sequence](docs/images/fill_sequence.png)
+  *Inferência de preenchimento: leitura DTM/Ortho (local ou S3), inferência por blocos com padding, blending das bordas, geração de máscara, métricas e plots; outputs enviados ao destino configurado.*
+
+- **Backbone de Profundidade (DPT-ViT)**  
+  ![DPT Architecture](docs/images/dpt_architecture.jpg)
+  *Diagrama conceitual do DPT baseado em ViT: encoder Transformer para contexto global e decoder de refinamento para produzir mapa de profundidade denso, usado como backbone do marsfill.*
+
+
 ## Instalação
 
 ```bash
@@ -41,11 +64,6 @@ conda activate marsfill-env
 ## Uso
 
 Todo o pipeline funciona em dois modos: **s3** (dados lidos/escritos direto no bucket) ou **local** (dados em `./data` na raiz do projeto). Os comandos abaixo assumem o perfil `prod`; use `--profile test` para o perfil de teste.
-
-Diagramas (PlantUML) estão em `docs/diagrams/`:
-- `dataset_sequence.puml`
-- `train_sequence.puml`
-- `fill_sequence.puml`
 
 ### Testes
 
