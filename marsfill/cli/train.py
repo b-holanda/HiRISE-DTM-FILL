@@ -13,8 +13,11 @@ from marsfill.utils.profiler import get_profile
 class TrainingCLI:
     """
     Interface de Linha de Comando (CLI) para orquestrar o treinamento do modelo.
-    Responsável por carregar perfis de configuração, definir o ambiente (Local/S3/Distribuído)
-    e instanciar o treinador.
+
+    Responsabilidades principais:
+    - Ler perfis de configuração.
+    - Definir ambiente (local, S3, distribuído).
+    - Instanciar e executar o laço de treinamento.
     """
 
     def __init__(
@@ -26,10 +29,10 @@ class TrainingCLI:
         """
         Inicializa o orquestrador do CLI.
 
-        Parâmetros:
-            trainer_class (Type[MarsDepthTrainer]): A classe do treinador a ser instanciada. Permite injeção de mocks para testes.
-            profile_loader (Callable): Função para carregar o dicionário de perfil. Permite injeção para testes.
-            logger_instance (Optional[Logger]): Instância de logger customizada.
+        Args:
+            trainer_class: Classe do treinador a ser instanciada (permite injeção em testes).
+            profile_loader: Função que retorna um dicionário de perfil.
+            logger_instance: Logger opcional para reutilização em testes.
         """
         self.trainer_class = trainer_class
         self.profile_loader = profile_loader
@@ -37,14 +40,10 @@ class TrainingCLI:
 
     def _setup_distributed_environment(self) -> Tuple[bool, int, int, int]:
         """
-        Verifica e inicializa o ambiente de treinamento distribuído (DDP) baseado em variáveis de ambiente.
+        Inicializa (se necessário) o ambiente distribuído (DDP) a partir de variáveis de ambiente.
 
-        Retorno:
-            Tuple[bool, int, int, int]: Uma tupla contendo:
-                - is_distributed (bool): Se o ambiente é distribuído.
-                - local_rank (int): Rank local do processo.
-                - global_rank (int): Rank global do processo.
-                - world_size (int): Tamanho total do mundo (número de processos).
+        Returns:
+            Uma tupla com: (is_distributed, local_rank, global_rank, world_size).
         """
         if "RANK" in os.environ:
             if not dist.is_initialized():
@@ -62,13 +61,13 @@ class TrainingCLI:
         """
         Carrega as configurações e executa o pipeline de treinamento.
 
-        Parâmetros:
-            profile_name (str): Nome do perfil de configuração (ex: 'prod', 'dev').
-            storage_mode (str): Modo de armazenamento dos dados ('local' ou 's3').
+        Args:
+            profile_name: Nome do perfil de configuração (ex.: `prod`, `dev`).
+            storage_mode: Modo de armazenamento (`local` ou `s3`).
 
-        Levanta:
-            RuntimeError: Se o perfil não for encontrado.
-            ValueError: Se as configurações do modo de armazenamento estiverem incompletas.
+        Raises:
+            RuntimeError: Se o perfil não existir.
+            ValueError: Se o modo for inválido ou faltarem campos obrigatórios.
         """
         is_distributed, local_rank, global_rank, world_size = self._setup_distributed_environment()
 
@@ -127,6 +126,7 @@ class TrainingCLI:
 
 
 def main():
+    """Ponto de entrada da CLI de treinamento."""
     parser = argparse.ArgumentParser(description="CLI para Treinamento MarsFill")
     parser.add_argument(
         "--profile", type=str, default="prod", help="Nome do perfil de configuração"

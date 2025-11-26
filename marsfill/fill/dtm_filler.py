@@ -17,8 +17,10 @@ logger = Logger()
 
 class DTMFiller:
     """
-    Classe responsável por preencher lacunas (NoData) em arquivos DTM usando inferência de IA.
-    Suporta salvamento local ou envio direto para S3 após o processamento.
+    Preenche lacunas (NoData) em DTMs via inferência do modelo de profundidade.
+
+    Suporta leitura/escrita locais ou em S3, incluindo download dos insumos e upload
+    das saídas processadas.
     """
 
     def __init__(
@@ -29,13 +31,11 @@ class DTMFiller:
         s3_client: Optional[Any] = None,
     ) -> None:
         """
-        Inicializa o preenchedor de terreno.
-
-        Parâmetros:
-            evaluator (Evaluator): Instância da classe avaliadora contendo o modelo de IA carregado.
-            padding_size (int): Tamanho da borda extra (padding) para dar contexto ao modelo.
-            tile_size (int): Tamanho do bloco central (tile) onde a predição será efetivamente salva.
-            s3_client (Optional[Any]): Cliente Boto3 para upload/download S3. Se None, cria um novo se necessário.
+        Args:
+            evaluator: Avaliador com o modelo carregado.
+            padding_size: Tamanho do padding de contexto em pixels.
+            tile_size: Lado do tile processado em pixels.
+            s3_client: Cliente Boto3 opcional para operações S3.
         """
         self.depth_evaluator = evaluator
         self.context_padding_size = padding_size
@@ -43,9 +43,7 @@ class DTMFiller:
         self.s3_client = s3_client
 
     def _get_s3_client(self) -> Any:
-        """
-        Retorna o cliente S3 existente ou cria um novo.
-        """
+        """Retorna o cliente S3 existente ou cria um novo."""
         if self.s3_client is None:
             self.s3_client = boto3.client("s3")
         return self.s3_client
@@ -57,9 +55,7 @@ class DTMFiller:
         output_root: str,
         keep_local_output: bool = False,
     ) -> Tuple[str, str, Path, Path, Path]:
-        """
-        Alias para manter compatibilidade com a CLI.
-        """
+        """Executa o preenchimento e retorna URIs finais e caminhos locais usados."""
         return self.fill_missing_elevation_data(
             orthophoto_file_path=ortho_path,
             digital_terrain_model_path=dtm_path,
@@ -69,7 +65,15 @@ class DTMFiller:
 
     def _download_if_needed(self, source_uri: str, destination_dir: Path, filename: str) -> Path:
         """
-        Faz o download de um arquivo S3 para um diretório temporário. Se já for local, apenas retorna o Path.
+        Baixa de S3 para disco quando necessário; caminhos locais são retornados inalterados.
+
+        Args:
+            source_uri: Caminho local ou URI S3.
+            destination_dir: Diretório onde o arquivo será salvo quando baixado.
+            filename: Nome do arquivo salvo quando baixado.
+
+        Returns:
+            Caminho local resultante.
         """
         if not str(source_uri).startswith("s3://"):
             return Path(source_uri)
@@ -87,22 +91,20 @@ class DTMFiller:
         keep_local_output: bool = False,
     ) -> Tuple[str, str, Path, Path, Path]:
         """
-        Executa o pipeline de preenchimento e salva no destino (Local ou S3).
+        Executa o pipeline de preenchimento e salva no destino (local ou S3).
 
-        Parâmetros:
-            orthophoto_file_path: Caminho local ou URI S3 para o arquivo da ortofoto.
-            digital_terrain_model_path: Caminho local ou URI S3 para o arquivo DTM.
-            output_destination (str): Caminho do diretório local (ex: 'data/output') ou URI S3 (ex: 's3://bucket/output').
-            keep_local_output (bool): Se True e output for S3, mantém diretório temporário para uso pós-processamento.
+        Args:
+            orthophoto_file_path: Caminho ou URI da ortofoto.
+            digital_terrain_model_path: Caminho ou URI do DTM.
+            output_destination: Diretório local ou URI S3 para saída.
+            keep_local_output: Mantém diretório temporário quando saída é S3.
 
-        Retorno:
-            Tuple[str, str, Path, Path, Path]: Caminhos finais (ou URIs) do DTM preenchido e da máscara,
-            além dos caminhos locais efetivos gerados e do DTM original local.
+        Returns:
+            URIs finais (DTM e máscara) e caminhos locais usados no processamento.
         """
         is_s3_output = str(output_destination).startswith("s3://")
         temp_workspace: Optional[Path] = None
 
-        # Define onde o trabalho pesado do GDAL vai acontecer (sempre localmente)
         if is_s3_output:
             temp_workspace = Path(tempfile.mkdtemp())
             working_directory = temp_workspace
@@ -110,7 +112,6 @@ class DTMFiller:
             working_directory = Path(output_destination)
             working_directory.mkdir(parents=True, exist_ok=True)
 
-        # Download de entradas caso venham do S3
         local_ortho = self._download_if_needed(
             orthophoto_file_path, working_directory, "input_ortho.jp2"
         )
@@ -119,16 +120,13 @@ class DTMFiller:
         )
         original_dtm_path = local_dtm
 
-        # 1. Preparação dos Arquivos de Trabalho
         working_dtm_path, working_mask_path = self._prepare_working_files(
             local_dtm, working_directory
         )
 
-        # 2. Execução do Processamento (GDAL)
         try:
             self._execute_filling_process(local_ortho, working_dtm_path, working_mask_path)
 
-            # 3. Finalização (Upload S3 ou Manter Local)
             final_dtm_uri, final_mask_uri = self._finalize_output(
                 working_dtm_path, working_mask_path, output_destination, is_s3_output
             )
@@ -150,7 +148,14 @@ class DTMFiller:
         self, source_dtm_path: Path, working_directory: Path
     ) -> Tuple[Path, Path]:
         """
-        Cria os caminhos de trabalho e copia o DTM original.
+        Copia o DTM original para a área de trabalho e define caminhos de saída.
+
+        Args:
+            source_dtm_path: Caminho do DTM original.
+            working_directory: Diretório temporário usado no processamento.
+
+        Returns:
+            Caminhos do DTM preenchido e da máscara dentro da área de trabalho.
         """
         base_filename = os.path.basename(source_dtm_path).split(".")[0].lower()
         working_dtm_path = working_directory / f"predicted_{base_filename}.tif"
@@ -166,7 +171,12 @@ class DTMFiller:
         self, orthophoto_path: Path, dtm_path: Path, mask_path: Path
     ) -> None:
         """
-        Contém a lógica principal de abertura do GDAL e iteração sobre os tiles.
+        Abre datasets, percorre tiles e escreve predições e máscara.
+
+        Args:
+            orthophoto_path: Caminho da ortofoto.
+            dtm_path: Caminho do DTM a ser sobrescrito.
+            mask_path: Caminho para salvar a máscara de lacunas.
         """
         orthophoto_dataset = gdal.Open(str(orthophoto_path), gdal.GA_ReadOnly)
         dtm_dataset = gdal.Open(str(dtm_path), gdal.GA_Update)
@@ -185,7 +195,6 @@ class DTMFiller:
         if no_data_val is None:
             no_data_val = -3.4028234663852886e38
 
-        # Criação do dataset de máscara
         mask_dataset = self._create_mask_dataset(
             mask_path,
             width,
@@ -221,7 +230,17 @@ class DTMFiller:
         no_data_val: float,
     ) -> None:
         """
-        Processa um único bloco: lê, infere e escreve.
+        Processa um único tile: leitura, inferência, blending e gravação.
+
+        Args:
+            x: Offset horizontal do tile.
+            y: Offset vertical do tile.
+            total_w: Largura total do raster.
+            total_h: Altura total do raster.
+            ortho_band: Banda da ortofoto.
+            dtm_band: Banda do DTM.
+            mask_band: Banda da máscara gerada.
+            no_data_val: Valor NoData do DTM.
         """
         w_tile, h_tile = self._calculate_current_tile_dimensions(total_w, total_h, x, y)
 
@@ -231,20 +250,17 @@ class DTMFiller:
 
         missing_mask = (dtm_data == no_data_val) | np.isnan(dtm_data)
 
-        # Salva máscara de onde era buraco
         mask_band.WriteArray(missing_mask.astype(np.uint8), x, y)
 
         if not np.any(missing_mask):
             return
 
-        # Calcula contexto (padding)
         bbox = self._calculate_context_bounding_box(total_w, total_h, x, y, w_tile, h_tile)
 
         ortho_crop = ortho_band.ReadAsArray(
             bbox["x_start"], bbox["y_start"], bbox["width"], bbox["height"]
         ).astype(np.float32)
 
-        # Inferência
         normalized_ortho = self._normalize_image(ortho_crop)
         predicted_depth_box = self.depth_evaluator.predict_depth(
             orthophoto_image=normalized_ortho,
@@ -252,12 +268,10 @@ class DTMFiller:
             target_height=bbox["height"],
         )
 
-        # Recorte do centro (remove padding)
         predicted_tile = self._crop_tile_from_context_box(
             predicted_depth_box, x, y, bbox["x_start"], bbox["y_start"], h_tile, w_tile
         )
 
-        # Desnormalização e Blending
         valid_mask = ~missing_mask
         final_prediction = predicted_tile
 
@@ -277,14 +291,21 @@ class DTMFiller:
         self, working_dtm_path: Path, working_mask_path: Path, destination_root: str, is_s3: bool
     ) -> Tuple[str, str]:
         """
-        Move os arquivos processados para o destino final (Upload S3 ou apenas retorna caminhos locais).
+        Move os arquivos processados para destino final local ou S3.
+
+        Args:
+            working_dtm_path: Caminho local do DTM preenchido.
+            working_mask_path: Caminho local da máscara.
+            destination_root: Diretório de saída ou prefixo S3.
+            is_s3: Define se a saída deve ser enviada ao S3.
+
+        Returns:
+            URIs finais do DTM e da máscara.
         """
         if not is_s3:
-            # Se for local, os arquivos já estão no lugar certo (prepare_working_files usou output_dir)
             logger.info(f"Arquivos salvos localmente em: {destination_root}")
             return str(working_dtm_path), str(working_mask_path)
 
-        # Lógica S3
         client = self._get_s3_client()
         bucket, prefix = self._parse_s3_uri(destination_root)
 

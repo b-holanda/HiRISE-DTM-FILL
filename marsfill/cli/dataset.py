@@ -15,15 +15,15 @@ class DatasetCLI:
 
     def run(self, profile_name: str, execution_mode: str) -> None:
         """
-        Executa o pipeline de construção do dataset baseando-se em um perfil de configuração.
+        Executa o pipeline de construção do dataset a partir de um perfil.
 
-        Argumentos:
-            profile_name (str): Nome do perfil de configuração (ex: 'prod', 'dev') definido nos arquivos de settings.
-            execution_mode (str): Define o destino dos dados ('local' ou 's3').
+        Args:
+            profile_name: Nome do perfil de configuração (ex.: `prod`, `dev`).
+            execution_mode: Destino dos dados, `local` ou `s3`.
 
-        Levanta:
-            ValueError: Se o bucket S3 não for definido quando o modo for 's3'.
-            Exception: Para erros gerais durante a execução do pipeline.
+        Raises:
+            ValueError: Quando o modo S3 é selecionado sem bucket definido.
+            Exception: Para qualquer falha no pipeline.
         """
         configuration_profile = get_profile(profile_name)
         if not configuration_profile:
@@ -91,6 +91,7 @@ class DatasetCLI:
 
 
 def main():
+    """Ponto de entrada da CLI de dataset."""
     parser = argparse.ArgumentParser(description="Marsfill Dataset Builder CLI")
 
     parser.add_argument(

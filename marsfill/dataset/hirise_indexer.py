@@ -12,7 +12,7 @@ logger = Logger()
 
 @dataclass(frozen=True)
 class ProductPair:
-    """Armazena um par de URLs de DTM e Orthoimage."""
+    """Par de URLs de DTM e ortoimagem."""
 
     dtm_url: str
     ortho_url: str
@@ -24,18 +24,12 @@ class ProductPair:
 
 
 class HirisePDSIndexerDFS:
-    """
-    Navega pelo repositório PDS da HiRISE usando uma abordagem de
-    Busca em Profundidade (DFS) para indexar pares de DTM e Ortho.
-    """
+    """Indexa pares DTM/ORTHO no PDS HiRISE via busca em profundidade."""
 
     def __init__(self, base_urls: Iterable[str]):
         """
-        Inicializa o indexador DFS.
-
         Args:
-            base_urls: Uma lista ou iterável de URLs raiz para começar a varredura
-                         (ex: [.../DTM/PSP/, .../DTM/ESP/]).
+            base_urls: URLs raiz para varredura (ex.: .../DTM/PSP/, .../DTM/ESP/).
         """
         self.start_urls = list(base_urls)
         self.session = requests.Session()
@@ -53,9 +47,10 @@ class HirisePDSIndexerDFS:
 
     def _fetch_and_parse(self, url: str) -> tuple[List[str], List[str]]:
         """
-        Busca o HTML de uma URL e retorna duas listas:
-        1. Links de subdiretórios
-        2. Links de arquivos
+        Lê o HTML de um diretório e retorna subdiretórios e arquivos.
+
+        Returns:
+            Tupla (lista de diretórios, lista de arquivos).
         """
         try:
             response = self.session.get(url, timeout=10)
@@ -91,8 +86,10 @@ class HirisePDSIndexerDFS:
 
     def _process_leaf_page(self, file_urls: List[str]) -> bool:
         """
-        Processa uma página que contém arquivos (um "nó folha").
-        Tenta encontrar um par DTM/ORTHO nela.
+        Verifica se uma página contém um par DTM/ORTHO.
+
+        Returns:
+            True se um par for encontrado e armazenado.
         """
         dtm_url = None
         ortho_url = None
@@ -119,14 +116,13 @@ class HirisePDSIndexerDFS:
 
     def index_pairs(self, max_pairs: Optional[int] = None) -> List[ProductPair]:
         """
-        Varre o PDS usando DFS iterativo e indexa os pares de DTM/Orthoimage.
+        Varre o PDS usando DFS e retorna pares DTM/ORTHO.
 
         Args:
-            max_pairs: O número máximo de pares para encontrar.
-                         Se None, busca todos.
+            max_pairs: Limite opcional de pares.
 
         Returns:
-            Uma lista de objetos ProductPair.
+            Lista de ProductPair encontrados.
         """
         self.pairs_found = []
         self.visited_dirs = set()

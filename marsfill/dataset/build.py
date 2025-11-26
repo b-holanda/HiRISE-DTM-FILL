@@ -23,6 +23,8 @@ logger = Logger()
 
 
 class DatasetBuilder:
+    """Constrói o dataset Marsfill a partir de pares HiRISE (DTM e ORTHO)."""
+
     def __init__(
         self,
         urls_to_scan: List[str],
@@ -37,19 +39,19 @@ class DatasetBuilder:
         s3_client: Optional[Any] = None,
     ) -> None:
         """
-        Inicializa o construtor do dataset.
+        Configura parâmetros de varredura, corte e armazenamento.
 
-        Argumentos:
-            urls_to_scan (List[str]): Lista de URLs base para escanear os produtos HiRISE.
-            total_samples (int): Número total de pares de produtos para processar.
-            tile_size (int): Tamanho da janela (largura e altura) para o recorte das imagens.
-            stride_size (int): Passo do deslocamento da janela deslizante.
-            download_directory (Optional[Path]): Caminho local para salvar os dados. Se None, usa S3.
-            s3_bucket_name (Optional[str]): Nome do bucket S3 para salvar os dados. Obrigatório se download_directory for None.
-            s3_prefix (str): Prefixo (pasta) dentro do bucket ou diretório local.
-            batch_size (int): Quantidade de tiles para acumular antes de salvar um arquivo parquet.
-            max_workers (Optional[int]): Número máximo de processos paralelos.
-            s3_client (Optional[Any]): Instância de cliente boto3 S3 injetada para facilitar testes.
+        Args:
+            urls_to_scan: URLs base do repositório HiRISE.
+            total_samples: Número máximo de pares a processar.
+            tile_size: Lado do tile em pixels.
+            stride_size: Passo da janela deslizante.
+            download_directory: Destino local para salvar dados; se None, usa S3.
+            s3_bucket_name: Bucket S3 de destino.
+            s3_prefix: Prefixo de escrita no bucket ou diretório.
+            batch_size: Número de tiles por arquivo Parquet.
+            max_workers: Número de processos paralelos.
+            s3_client: Cliente S3 opcional para injeção em testes.
         """
         self.urls_to_scan = urls_to_scan
         self.total_samples = total_samples
@@ -75,18 +77,17 @@ class DatasetBuilder:
 
     def _list_datasets(self) -> List[ProductPair]:
         """
-        Escaneia as URLs fornecidas e retorna uma lista de pares de produtos (Ortho e DTM).
+        Localiza pares DTM/ORTHO no repositório HiRISE.
 
-        Retorna:
-            List[ProductPair]: Lista contendo objetos com as URLs dos pares encontrados.
+        Returns:
+            Lista de pares de produtos encontrados.
         """
         indexer = HirisePDSIndexerDFS(self.urls_to_scan)
         return indexer.index_pairs(max_pairs=self.total_samples)
 
     def _prepare_assignments(self) -> None:
         """
-        Define aleatoriamente quais amostras pertencerão aos conjuntos de treino, teste e validação.
-        A distribuição é fixa em 80% treino, 10% teste e 10% validação.
+        Distribui amostras entre treino, validação e teste (80/10/10).
         """
         logger.info(f"Preparando {self.total_samples} atribuições...")
         test_count = int(np.round(0.1 * self.total_samples))
@@ -101,7 +102,7 @@ class DatasetBuilder:
     @staticmethod
     def _index_to_label(index: int) -> str:
         """
-        Converte um índice em label alfabético (a, b, c, ..., z, aa, ab, ...)
+        Converte índice inteiro em rótulo alfabético (a, b, c... aa, ab).
         """
         letters = []
         while True:
@@ -122,16 +123,18 @@ class DatasetBuilder:
         s3_prefix: str,
     ) -> Tuple[str, List[Dict[str, Any]]]:
         """
-        Processa um par de imagens (Orthoimagem e DTM) em um processo separado.
-        Realiza o download em memória, alinhamento (warp), recorte (tiling) e normalização.
+        Processa um par DTM/ORTHO: download, alinhamento, corte e normalização.
 
-        Argumentos:
-            pair_data (Dict[str, Any]): Dicionário contendo 'dtm_url', 'ortho_url' e 'split'.
-            tile_size (int): Tamanho do recorte quadrado.
-            stride_size (int): Tamanho do passo para recorte.
+        Args:
+            pair_data: Metadados do par (URLs, split, label de teste).
+            tile_size: Lado do recorte.
+            stride_size: Passo de deslocamento.
+            download_directory: Destino local para salvas dados de teste; None para S3.
+            s3_bucket_name: Bucket S3 para salvar originais de teste.
+            s3_prefix: Prefixo dataset (ex.: dataset/v1/).
 
-        Retorna:
-            Tuple[str, List[Dict[str, Any]]]: Uma tupla contendo o nome do split (ex: 'train') e uma lista de dicionários com os tiles processados.
+        Returns:
+            Split alvo e lista de tiles serializados.
         """
         digital_terrain_model_url = pair_data["dtm_url"]
         ortho_image_url = pair_data["ortho_url"]
@@ -266,10 +269,10 @@ class DatasetBuilder:
         """
         Salva um lote de dados processados em arquivo Parquet (Local ou S3).
 
-        Argumentos:
-            data_list (List[Dict]): Lista de tiles processados.
-            dataset_split (str): O conjunto de dados (train, test, validation).
-            batch_index (int): O índice sequencial deste lote.
+        Args:
+            data_list: Tiles processados.
+            dataset_split: Split alvo (train/validation/test).
+            batch_index: Índice sequencial do arquivo.
         """
         if not data_list:
             return
@@ -393,12 +396,10 @@ class DatasetBuilder:
 
     def run(self) -> None:
         """
-        Executa o pipeline completo:
-        1. Lista datasets.
-        2. Atribui splits (treino/teste).
-        3. Processa imagens em paralelo.
-        4. Salva lotes em parquet.
-        5. Empacota resultados em ZIP.
+        Executa o pipeline completo de construção do dataset.
+
+        Etapas: listar pares, distribuir splits, processar em paralelo,
+        gravar Parquets e empacotar artefatos.
         """
         logger.info("Iniciando pipeline...")
         datasets = self._list_datasets()

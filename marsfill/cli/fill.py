@@ -16,12 +16,31 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
 def parse_s3_uri(uri: str) -> Tuple[str, str]:
+    """
+    Separa uma URI S3 em bucket e chave.
+
+    Args:
+        uri: URI no formato s3://bucket/key.
+
+    Returns:
+        Tupla contendo (bucket, chave).
+    """
     clean = uri.replace("s3://", "")
     bucket, key = clean.split("/", 1)
     return bucket, key
 
 
 def join_path(base: Any, *parts: str) -> Any:
+    """
+    Concatena segmentos de caminho para `Path` ou string (S3/local).
+
+    Args:
+        base: Prefixo base (Path ou string).
+        *parts: Segmentos adicionais.
+
+    Returns:
+        Caminho combinado no mesmo tipo do base.
+    """
     if isinstance(base, Path):
         for part in parts:
             base = base / part
@@ -31,6 +50,14 @@ def join_path(base: Any, *parts: str) -> Any:
 
 
 def upload_artifacts_to_s3(local_dir: Path, remote_prefix: str, s3_client: Any) -> None:
+    """
+    Envia todos os arquivos de um diretório local para um prefixo S3.
+
+    Args:
+        local_dir: Diretório contendo os arquivos a publicar.
+        remote_prefix: URI S3 de destino (ex.: s3://bucket/prefix).
+        s3_client: Instância Boto3 já configurada.
+    """
     bucket, key_prefix = parse_s3_uri(remote_prefix)
     for file_path in local_dir.iterdir():
         if not file_path.is_file():
@@ -41,6 +68,7 @@ def upload_artifacts_to_s3(local_dir: Path, remote_prefix: str, s3_client: Any) 
 
 
 def main():
+    """Ponto de entrada da CLI de preenchimento de DTMs."""
     parser = argparse.ArgumentParser(
         prog="Mars DTM Fill", description="CLI para preenchimento de lacunas em DTMs", epilog=""
     )

@@ -26,24 +26,20 @@ class Evaluator:
         s3_client: Optional[Any] = None,
     ) -> None:
         """
-        Inicializa a arquitetura do modelo e carrega os pesos treinados.
+        Inicializa o modelo base e carrega os pesos treinados.
 
-        Parâmetros:
-            pretrained_model_name (AvailableModels): O nome do modelo base (backbone) da HuggingFace.
-            model_path_uri (str): URI para os pesos do modelo (.pth).
-                                  Pode ser local (ex: 'data/model.pth') ou S3 (ex: 's3://bucket/model.pth').
-            s3_client (Optional[Any]): Cliente Boto3 injetável para facilitar testes.
-                                       Se None e o URI for S3, cria uma instância padrão.
+        Args:
+            pretrained_model_name: Nome do backbone HuggingFace.
+            model_path_uri: Caminho local ou URI S3 do checkpoint .pth.
+            s3_client: Cliente Boto3 opcional (para testes/injeção).
         """
         logger.info("Iniciando arquitetura base do avaliador")
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.s3_client = s3_client
 
-        # Inicializa a arquitetura do modelo (pesos aleatórios/padrão do backbone)
         self.model = DPTForDepthEstimation.from_pretrained(pretrained_model_name.value)
 
-        # Carrega os pesos específicos do treinamento (checkpoint)
         self._load_model_weights(model_path_uri)
 
         self.model.to(self.device)
@@ -58,8 +54,8 @@ class Evaluator:
         """
         Retorna o cliente S3 existente ou cria um novo se necessário.
 
-        Retorno:
-            Any: Cliente do Boto3.
+        Returns:
+            Cliente Boto3.
         """
         if self.s3_client is None:
             self.s3_client = boto3.client("s3")
@@ -69,11 +65,11 @@ class Evaluator:
         """
         Analisa uma URI S3 e extrai o nome do bucket e a chave do objeto.
 
-        Parâmetros:
-            uri (str): URI no formato s3://bucket-name/path/to/file
+        Args:
+            uri: URI no formato s3://bucket-name/path/to/file.
 
-        Retorno:
-            Tuple[str, str]: Uma tupla (nome_do_bucket, chave_do_arquivo).
+        Returns:
+            Nome do bucket e chave.
         """
         clean_uri = uri.replace("s3://", "")
         parts = clean_uri.split("/", 1)
@@ -83,10 +79,10 @@ class Evaluator:
         """
         Gerencia o carregamento do state_dict. Se a URI for S3, baixa para um arquivo temporário primeiro.
 
-        Parâmetros:
-            model_uri (str): URI de origem do arquivo .pth.
+        Args:
+            model_uri: URI de origem do arquivo .pth.
 
-        Levanta:
+        Raises:
             FileNotFoundError: Se o arquivo local não existir.
         """
         logger.info(f"Carregando pesos do modelo de: {model_uri}")
@@ -95,12 +91,10 @@ class Evaluator:
             s3_interface = self._get_s3_client()
             bucket_name, object_key = self._extract_s3_bucket_and_key(model_uri)
 
-            # NamedTemporaryFile garante que o arquivo seja deletado após o uso (context exit)
             with tempfile.NamedTemporaryFile(suffix=".pth") as temporary_file:
                 logger.info(f"Baixando modelo do S3 ({bucket_name}/{object_key})...")
                 s3_interface.download_file(bucket_name, object_key, temporary_file.name)
 
-                # Aplica os pesos do arquivo temporário baixado
                 self._apply_state_dict_from_file(temporary_file.name)
         else:
             if not os.path.exists(model_uri):
@@ -113,14 +107,13 @@ class Evaluator:
         """
         Carrega o dicionário de estados do disco e remove prefixos específicos de treinamento distribuído (DDP).
 
-        Parâmetros:
-            file_path (str): Caminho físico local para o arquivo .pth.
+        Args:
+            file_path: Caminho físico local para o arquivo .pth.
         """
-        raw_state_dict = torch.load(file_path, map_location=self.device)
+        raw_state_dict = torch.load(file_path, map_location=self.device, weights_only=True)
 
         sanitized_state_dict = {}
         for key, value in raw_state_dict.items():
-            # Remove o prefixo 'module.' que o DistributedDataParallel adiciona
             clean_key = key[7:] if key.startswith("module.") else key
             sanitized_state_dict[clean_key] = value
 
@@ -132,13 +125,13 @@ class Evaluator:
         """
         Executa a inferência na imagem fornecida e redimensiona a saída para as dimensões alvo.
 
-        Parâmetros:
-            orthophoto_image (np.ndarray): Imagem de entrada (RGB) como array Numpy.
-            target_height (int): Altura desejada para o array de saída.
-            target_width (int): Largura desejada para o array de saída.
+        Args:
+            orthophoto_image: Imagem de entrada (RGB) como array Numpy.
+            target_height: Altura desejada na saída.
+            target_width: Largura desejada na saída.
 
-        Retorno:
-            np.ndarray: Mapa de profundidade predito (float32) com as dimensões especificadas.
+        Returns:
+            Mapa de profundidade predito (float32) no tamanho solicitado.
         """
         model_inputs = self.image_processor(images=orthophoto_image, return_tensors="pt")
         model_inputs = {k: v.to(self.device) for k, v in model_inputs.items()}

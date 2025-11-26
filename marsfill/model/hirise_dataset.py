@@ -79,8 +79,10 @@ class StreamingHiRISeDataset(IterableDataset):
             self.image_tile_size, self.image_tile_size
         )
 
-        digital_terrain_model_numpy_array = np.frombuffer(dtm_bytes, dtype=np.float32).reshape(
-            self.image_tile_size, self.image_tile_size
+        digital_terrain_model_numpy_array = (
+            np.frombuffer(dtm_bytes, dtype=np.float32)
+            .reshape(self.image_tile_size, self.image_tile_size)
+            .copy()
         )
 
         orthophoto_rgb_array = np.stack(
