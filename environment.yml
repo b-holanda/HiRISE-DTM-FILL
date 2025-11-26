@@ -15,6 +15,7 @@ dependencies:
   - pillow
   - tqdm
   - pyyaml
+  - pytest
   - blas=*=openblas
   - nomkl
   - pip

@@ -45,6 +45,15 @@ Diagramas (PlantUML) estão em `docs/diagrams/`:
 - `train_sequence.puml`
 - `fill_sequence.puml`
 
+### Testes
+
+Após criar/atualizar o ambiente Conda, rode:
+
+```bash
+conda activate marsfill-env
+pytest
+```
+
 ### 1) Gerar rótulos de treinamento (100 pares DTM+ORTHO)
 
 Requisitos recomendados:
