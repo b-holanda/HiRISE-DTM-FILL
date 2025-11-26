@@ -16,6 +16,7 @@ dependencies:
   - tqdm
   - pyyaml
   - pytest
+  - pytest-cov
   - blas=*=openblas
   - nomkl
   - pip

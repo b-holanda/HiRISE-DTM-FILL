@@ -52,6 +52,9 @@ Após criar/atualizar o ambiente Conda, rode:
 ```bash
 conda activate marsfill-env
 pytest
+
+# Com report de coverage (terminal + HTML em htmlcov/)
+pytest --cov --cov-report=term-missing --cov-report=html
 ```
 
 ### 1) Gerar rótulos de treinamento (100 pares DTM+ORTHO)
