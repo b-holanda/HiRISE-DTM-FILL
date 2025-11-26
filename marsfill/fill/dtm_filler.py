@@ -25,6 +25,7 @@ class DTMFiller:
 
     def fill(self, ortho_path: Path, dtm_path: Path, output_folder: Path) -> None:
         output_file_path = output_folder / f"predicted_{os.path.basename(dtm_path)}"
+        output_file_mask_path = output_folder / f"mask_{os.path.basename(dtm_path)}"
 
         if not os.path.exists(output_file_path):
             logger.info(f"Copiando DTM original para: {output_file_path}")
@@ -47,6 +48,21 @@ class DTMFiller:
 
         if nodata_val is None:
             nodata_val = -3.4028234663852886e+38
+
+        driver = gdal.GetDriverByName('GTiff')
+        mask_dataset = driver.Create(
+            str(output_file_mask_path),
+            orthoimage_width,
+            orthoimage_height,
+            1,
+            gdal.GDT_Byte,
+            options=['COMPRESS=LZW']
+        )
+        mask_dataset.SetGeoTransform(orthoimage_dataset.GetGeoTransform())
+        mask_dataset.SetProjection(orthoimage_dataset.GetProjection())
+        
+        mask_band = mask_dataset.GetRasterBand(1)
+        mask_band.SetNoDataValue(0)
 
         logger.info(f"Iniciado preenchimento do arquivo: {os.path.basename(dtm_path)}")
         logger.info(f"Orthoimage base carregada: {os.path.basename(ortho_path)}")
@@ -75,6 +91,9 @@ class DTMFiller:
                 continue
 
             mask_nodata_tile = (dtm_tile == nodata_val) | np.isnan(dtm_tile)
+
+            mask_to_save = mask_nodata_tile.astype(np.uint8)
+            mask_band.WriteArray(mask_to_save, x_tile, y_tile)
 
             if not np.any(mask_nodata_tile):
                 continue
@@ -121,6 +140,7 @@ class DTMFiller:
             output_band.WriteArray(dtm_tile, x_tile, y_tile)
 
         output_band.FlushCache()
+        mask_band.FlushCache()
         orthoimage_dataset = None
         output_dataset = None
 
