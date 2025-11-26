@@ -18,15 +18,11 @@ def main():
                     description='CLI para preenchimento de lacunas em DTMs',
                     epilog='')
     
-    parser.add_argument('fill')
     parser.add_argument('-dtm', '--dtm', help='caminho completo para DTM com lacunas a serem preenchidas')
     parser.add_argument('-ortho', '--ortho', help='caminho completo para orthoimagem que será utilizada para preencher as lacunas do dtm')
     parser.add_argument('-p', '--profile', help='Perfil que executará o script [prod] ou [test]')
 
     args = parser.parse_args()
-
-    if not args.fill:
-        raise argparse.ArgumentError('Comando não encontrado')
     
     if not args.dtm:
         raise argparse.ArgumentError('Caminho para DTM é inválido')
