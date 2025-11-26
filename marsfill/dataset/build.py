@@ -22,6 +22,14 @@ gdal.UseExceptions()
 logger = Logger()
 
 
+def _safe_unlink(path: str) -> None:
+    """Remove um caminho virtual GDAL, ignorando erros de deleção."""
+    try:
+        gdal.Unlink(path)
+    except RuntimeError:
+        logger.debug(f"GDAL Unlink ignorado para {path}")
+
+
 class DatasetBuilder:
     """Constrói o dataset Marsfill a partir de pares HiRISE (DTM e ORTHO)."""
 
@@ -259,9 +267,9 @@ class DatasetBuilder:
             print(f"Erro worker {pair_identifier}: {error}")
 
         finally:
-            gdal.Unlink(virtual_ortho_path)
-            gdal.Unlink(virtual_dtm_path)
-            gdal.Unlink(virtual_aligned_path)
+            _safe_unlink(virtual_ortho_path)
+            _safe_unlink(virtual_dtm_path)
+            _safe_unlink(virtual_aligned_path)
 
         return dataset_split, processed_results
 
@@ -461,7 +469,7 @@ class DatasetBuilder:
                             batch_counters[split_name] += 1
 
                 except Exception as error:
-                    logger.error(f"Erro no loop principal: {error}")
+                    logger.exception(f"Erro no loop principal: {error}")
 
         for split_name, buffer_data in data_buffers.items():
             if buffer_data:

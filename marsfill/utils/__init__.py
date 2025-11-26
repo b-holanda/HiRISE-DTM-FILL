@@ -40,8 +40,8 @@ class ApplicationLogger:
         """
         Inicializa o logger. Configura handlers de console e arquivo se ainda não inicializado.
 
-        Parâmetros:
-            log_file_path (Optional[Path]): Caminho para o arquivo de log. Se None, usa 'app.log' no diretório atual.
+        Args:
+            log_file_path: Caminho do arquivo de log. Se None, usa 'app.log' no diretório atual.
         """
         if hasattr(self, "_initialized"):
             return
@@ -49,17 +49,21 @@ class ApplicationLogger:
         self._internal_logger = logging.getLogger("marsfill")
         self._internal_logger.setLevel(logging.DEBUG)
 
-        console_handler = logging.StreamHandler()
         formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+
+        # Handler de console
+        console_handler = logging.StreamHandler()
         console_handler.setFormatter(formatter)
         self._internal_logger.addHandler(console_handler)
 
+        # Handler de arquivo
         if log_file_path is None:
             log_file_path = Path("app.log")
 
         try:
             file_handler = logging.FileHandler(log_file_path)
             file_handler.setFormatter(formatter)
+            file_handler.setLevel(logging.DEBUG)
             self._internal_logger.addHandler(file_handler)
         except IOError:
             print(
@@ -72,8 +76,8 @@ class ApplicationLogger:
         """
         Registra uma mensagem de nível INFO.
 
-        Parâmetros:
-            message (str): A mensagem a ser logada.
+        Args:
+            message: Texto a ser registrado.
         """
         self._internal_logger.info(message)
 
@@ -81,8 +85,8 @@ class ApplicationLogger:
         """
         Registra uma mensagem de nível DEBUG.
 
-        Parâmetros:
-            message (str): A mensagem a ser logada.
+        Args:
+            message: Texto a ser registrado.
         """
         self._internal_logger.debug(message)
 
@@ -90,11 +94,15 @@ class ApplicationLogger:
         """
         Registra uma mensagem de nível ERROR.
 
-        Parâmetros:
-            message (str): A mensagem de erro.
-            exception_info (bool): Se True, inclui a stack trace da exceção.
+        Args:
+            message: Texto do erro.
+            exception_info: Se True, inclui stack trace da exceção.
         """
         self._internal_logger.error(message, stack_info=True, exc_info=exception_info)
+
+    def exception(self, message: str) -> None:
+        """Atalho para logar exceções com stack trace."""
+        self._internal_logger.exception(message)
 
 
 # Alias público usado em todo o projeto
