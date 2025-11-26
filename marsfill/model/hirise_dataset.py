@@ -5,6 +5,7 @@ import numpy as np
 from typing import List, Tuple, Iterator, Optional
 from transformers import DPTImageProcessor
 
+
 class StreamingHiRISeDataset(IterableDataset):
     """
     Dataset iterável para carregar dados HiRISe de arquivos Parquet em streaming.
@@ -12,13 +13,13 @@ class StreamingHiRISeDataset(IterableDataset):
     """
 
     def __init__(
-        self, 
+        self,
         parquet_file_paths: List[str],
-        image_processor: DPTImageProcessor, 
-        process_rank: int = 0, 
+        image_processor: DPTImageProcessor,
+        process_rank: int = 0,
         total_process_count: int = 1,
         image_tile_size: int = 512,
-        estimated_rows_per_file: int = 500
+        estimated_rows_per_file: int = 500,
     ) -> None:
         """
         Inicializa o dataset de streaming.
@@ -47,16 +48,22 @@ class StreamingHiRISeDataset(IterableDataset):
         Retorno:
             List[str]: Subconjunto de caminhos de arquivos atribuídos a este worker.
         """
-        files_assigned_to_process = self.parquet_file_paths[self.process_rank :: self.total_process_count]
+        files_assigned_to_process = self.parquet_file_paths[
+            self.process_rank :: self.total_process_count
+        ]
 
         worker_information = get_worker_info()
 
         if worker_information is None:
             return files_assigned_to_process
         else:
-            return files_assigned_to_process[worker_information.id :: worker_information.num_workers]
+            return files_assigned_to_process[
+                worker_information.id :: worker_information.num_workers
+            ]
 
-    def _convert_bytes_to_tensors(self, ortho_bytes: bytes, dtm_bytes: bytes) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _convert_bytes_to_tensors(
+        self, ortho_bytes: bytes, dtm_bytes: bytes
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Converte os bytes brutos do Parquet em tensores PyTorch processados.
         Método isolado para facilitar testes unitários sem necessidade de I/O de disco.
@@ -71,21 +78,22 @@ class StreamingHiRISeDataset(IterableDataset):
         orthophoto_numpy_array = np.frombuffer(ortho_bytes, dtype=np.float32).reshape(
             self.image_tile_size, self.image_tile_size
         )
-        
+
         digital_terrain_model_numpy_array = np.frombuffer(dtm_bytes, dtype=np.float32).reshape(
             self.image_tile_size, self.image_tile_size
         )
 
         orthophoto_rgb_array = np.stack(
-            [orthophoto_numpy_array, orthophoto_numpy_array, orthophoto_numpy_array], 
-            axis=-1
+            [orthophoto_numpy_array, orthophoto_numpy_array, orthophoto_numpy_array], axis=-1
         )
 
         processed_inputs = self.image_processor(orthophoto_rgb_array, return_tensors="pt")
-        
+
         pixel_values_tensor = processed_inputs["pixel_values"].squeeze(0)
-        
-        digital_terrain_model_tensor = torch.from_numpy(digital_terrain_model_numpy_array).float().unsqueeze(0)
+
+        digital_terrain_model_tensor = (
+            torch.from_numpy(digital_terrain_model_numpy_array).float().unsqueeze(0)
+        )
 
         return pixel_values_tensor, digital_terrain_model_tensor
 
@@ -105,11 +113,10 @@ class StreamingHiRISeDataset(IterableDataset):
                 for group_index in range(parquet_file.num_row_groups):
                     row_group_batch = parquet_file.read_row_group(group_index)
                     dataframe = row_group_batch.to_pandas()
-                    
+
                     for _, data_row in dataframe.iterrows():
                         yield self._convert_bytes_to_tensors(
-                            data_row['ortho_bytes'], 
-                            data_row['dtm_bytes']
+                            data_row["ortho_bytes"], data_row["dtm_bytes"]
                         )
 
             except Exception as error:

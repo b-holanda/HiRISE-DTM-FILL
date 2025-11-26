@@ -38,11 +38,27 @@ def test_end_to_end_stubbed(monkeypatch, tmp_path):
 
     class FakeTrainingCLI(train_cli.TrainingCLI):
         def __init__(self):
-            fake_logger = types.SimpleNamespace(info=lambda *a, **k: None, error=lambda *a, **k: None)
-            super().__init__(trainer_class=FakeTrainer, profile_loader=lambda name: {"train": {"local_data_dir": str(tmp_path), "batch_size": 1, "learning_rate": 1e-4}}, logger_instance=fake_logger)
+            fake_logger = types.SimpleNamespace(
+                info=lambda *a, **k: None, error=lambda *a, **k: None
+            )
+            super().__init__(
+                trainer_class=FakeTrainer,
+                profile_loader=lambda name: {
+                    "train": {
+                        "local_data_dir": str(tmp_path),
+                        "batch_size": 1,
+                        "learning_rate": 1e-4,
+                    }
+                },
+                logger_instance=fake_logger,
+            )
 
     monkeypatch.setattr(train_cli, "TrainingCLI", FakeTrainingCLI)
-    monkeypatch.setattr(train_cli, "Logger", lambda: types.SimpleNamespace(info=lambda *a, **k: None, error=lambda *a, **k: None))
+    monkeypatch.setattr(
+        train_cli,
+        "Logger",
+        lambda: types.SimpleNamespace(info=lambda *a, **k: None, error=lambda *a, **k: None),
+    )
     monkeypatch.setattr(sys, "argv", ["prog", "--profile", "prod", "--mode", "local"])
     train_cli.main()
 
@@ -90,5 +106,7 @@ def test_end_to_end_stubbed(monkeypatch, tmp_path):
         ),
     )
     monkeypatch.setattr(fill_cli, "logger", types.SimpleNamespace(info=lambda *a, **k: None))
-    monkeypatch.setattr(sys, "argv", ["prog", "--test", test_id, "--profile", "prod", "--mode", "local"])
+    monkeypatch.setattr(
+        sys, "argv", ["prog", "--test", test_id, "--profile", "prod", "--mode", "local"]
+    )
     fill_cli.main()

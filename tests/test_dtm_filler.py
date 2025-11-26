@@ -12,16 +12,13 @@ class FakeEvaluator:
     def predict_depth(self, orthophoto_image, target_height, target_width):
         self.calls.append((orthophoto_image.shape, target_height, target_width))
         import numpy as np
+
         return np.zeros((target_height, target_width), dtype=np.float32)
 
 
 def test_fill_flow_local(monkeypatch, tmp_path):
     # Avoid heavy GDAL by mocking execution/finalization
-    filler = DTMFiller(
-        evaluator=FakeEvaluator(),
-        padding_size=1,
-        tile_size=2
-    )
+    filler = DTMFiller(evaluator=FakeEvaluator(), padding_size=1, tile_size=2)
 
     called = {"execute": False, "finalize": False}
 
@@ -41,9 +38,7 @@ def test_fill_flow_local(monkeypatch, tmp_path):
     dtm.write_text("dtm")
 
     filled_uri, mask_uri, *_ = filler.fill(
-        dtm_path=dtm,
-        ortho_path=ortho,
-        output_root=str(tmp_path)
+        dtm_path=dtm, ortho_path=ortho, output_root=str(tmp_path)
     )
 
     assert called["execute"] and called["finalize"]
@@ -51,11 +46,7 @@ def test_fill_flow_local(monkeypatch, tmp_path):
 
 
 def test_download_if_needed_s3(monkeypatch, tmp_path):
-    filler = DTMFiller(
-        evaluator=FakeEvaluator(),
-        padding_size=1,
-        tile_size=2
-    )
+    filler = DTMFiller(evaluator=FakeEvaluator(), padding_size=1, tile_size=2)
 
     class FakeS3:
         def __init__(self):

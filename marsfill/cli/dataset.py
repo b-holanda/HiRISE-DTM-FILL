@@ -9,6 +9,7 @@ from marsfill.utils.profiler import get_profile
 
 logger = Logger()
 
+
 class DatasetCLI:
     """Interface de Linha de Comando (CLI) para orquestrar a construção do dataset Marsfill."""
 
@@ -32,10 +33,10 @@ class DatasetCLI:
         build_config = configuration_profile.get("make", {})
 
         total_samples: int = build_config.get("samples", 100)
-        urls_to_scan: list[str] = build_config.get("urls_to_scan", [
-            "https://www.uahirise.org/PDS/DTM/PSP/", 
-            "https://www.uahirise.org/PDS/DTM/ESP/"
-        ])
+        urls_to_scan: list[str] = build_config.get(
+            "urls_to_scan",
+            ["https://www.uahirise.org/PDS/DTM/PSP/", "https://www.uahirise.org/PDS/DTM/ESP/"],
+        )
         tile_size: int = build_config.get("tile_size", 512)
         stride_size: int = build_config.get("stride", 256)
         batch_size: int = build_config.get("batch_size", 500)
@@ -49,16 +50,18 @@ class DatasetCLI:
             output_directory_name = build_config.get("output", "dataset/v1/")
             project_root_path = Path(__file__).resolve().parent.parent.parent
             download_directory = project_root_path / output_directory_name
-            
+
             logger.info(f"🔧 Modo: LOCAL. Salvando em: {download_directory}")
-            
+
         elif execution_mode == "s3":
             s3_bucket_name = build_config.get("s3_bucket")
-            
+
             if not s3_bucket_name:
-                logger.error("Erro: Modo S3 selecionado, mas 's3_bucket' não está definido no profile.")
+                logger.error(
+                    "Erro: Modo S3 selecionado, mas 's3_bucket' não está definido no profile."
+                )
                 raise ValueError("Configuração 's3_bucket' ausente para modo S3.")
-                
+
             logger.info(f"🔧 Modo: S3. Bucket: {s3_bucket_name} | Prefix: {s3_prefix}")
 
         logger.info("--- Parâmetros do Dataset ---")
@@ -70,44 +73,46 @@ class DatasetCLI:
 
         try:
             builder = DatasetBuilder(
-                urls_to_scan=urls_to_scan, 
+                urls_to_scan=urls_to_scan,
                 total_samples=total_samples,
                 tile_size=tile_size,
                 stride_size=stride_size,
-                download_directory=download_directory, 
+                download_directory=download_directory,
                 s3_bucket_name=s3_bucket_name,
                 s3_prefix=s3_prefix,
                 batch_size=batch_size,
-                max_workers=max_workers
+                max_workers=max_workers,
             )
             builder.run()
-            
+
         except Exception as error:
             logger.error(f"Falha crítica na execução do pipeline: {error}")
             raise error
 
+
 def main():
     parser = argparse.ArgumentParser(description="Marsfill Dataset Builder CLI")
-    
+
     parser.add_argument(
-        "--profile", 
-        type=str, 
-        default="prod", 
-        help="Nome do perfil de configuração (ex: prod, test)"
+        "--profile",
+        type=str,
+        default="prod",
+        help="Nome do perfil de configuração (ex: prod, test)",
     )
-    
+
     parser.add_argument(
-        "--mode", 
-        type=str, 
-        choices=["local", "s3"], 
-        required=True, 
-        help="Define onde os dados serão salvos: no disco local ou upload direto pro S3."
+        "--mode",
+        type=str,
+        choices=["local", "s3"],
+        required=True,
+        help="Define onde os dados serão salvos: no disco local ou upload direto pro S3.",
     )
 
     args = parser.parse_args()
 
     cli_interface = DatasetCLI()
     cli_interface.run(profile_name=args.profile, execution_mode=args.mode)
+
 
 if __name__ == "__main__":
     main()

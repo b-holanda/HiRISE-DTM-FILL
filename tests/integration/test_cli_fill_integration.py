@@ -57,7 +57,9 @@ def test_fill_cli_stubbed_local(monkeypatch, tmp_path):
     monkeypatch.setattr(fill_cli, "FillerStats", FakeStats)
     monkeypatch.setattr(fill_cli, "logger", types.SimpleNamespace(info=lambda *a, **k: None))
 
-    monkeypatch.setattr(sys, "argv", ["prog", "--test", test_id, "--profile", "prod", "--mode", "local"])
+    monkeypatch.setattr(
+        sys, "argv", ["prog", "--test", test_id, "--profile", "prod", "--mode", "local"]
+    )
     fill_cli.main()
 
     expected_output_dir = output_root / f"test-{test_id}"

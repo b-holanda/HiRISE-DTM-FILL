@@ -9,16 +9,19 @@ from marsfill.utils import Logger
 
 logger = Logger()
 
+
 @dataclass(frozen=True)
 class ProductPair:
     """Armazena um par de URLs de DTM e Orthoimage."""
+
     dtm_url: str
     ortho_url: str
-    
+
     @property
     def id(self) -> str:
         match = re.search(r"(ESP|PSP)_\d{6}_\d{4}", self.ortho_url)
         return match.group(0) if match else "unknown_id"
+
 
 class HirisePDSIndexerDFS:
     """
@@ -38,13 +41,11 @@ class HirisePDSIndexerDFS:
         self.session = requests.Session()
 
         self.dtm_pattern = re.compile(
-            r"DTEEC_\d{6}_\d{4}_\d{6}_\d{4}_[A-Z]\d{2}\.IMG$", 
-            re.IGNORECASE
+            r"DTEEC_\d{6}_\d{4}_\d{6}_\d{4}_[A-Z]\d{2}\.IMG$", re.IGNORECASE
         )
 
         self.ortho_pattern = re.compile(
-            r"(ESP|PSP)_\d{6}_\d{4}_RED_A_\d{2}_ORTHO\.JP2$", 
-            re.IGNORECASE
+            r"(ESP|PSP)_\d{6}_\d{4}_RED_A_\d{2}_ORTHO\.JP2$", re.IGNORECASE
         )
 
         self.pairs_found: List[ProductPair] = []
@@ -63,24 +64,24 @@ class HirisePDSIndexerDFS:
             logger.error(f"Falha ao buscar {url}: {e}")
             return [], []
 
-        soup = BeautifulSoup(response.text, 'html.parser')
+        soup = BeautifulSoup(response.text, "html.parser")
         dir_links: List[str] = []
         file_links: List[str] = []
 
-        pre_tag = soup.find('pre')
+        pre_tag = soup.find("pre")
         if not pre_tag:
             logger.info(f"Nenhuma tag <pre> encontrada em {url}, pulando.")
             return [], []
 
-        for link in pre_tag.find_all('a'):
-            href = str(link.get('href') or "")
+        for link in pre_tag.find_all("a"):
+            href = str(link.get("href") or "")
 
-            if not href or href == '../' or href.startswith('?'):
+            if not href or href == "../" or href.startswith("?"):
                 continue
 
             absolute_url = urljoin(url, href)
 
-            if href.endswith('/'):
+            if href.endswith("/"):
                 if absolute_url not in self.visited_dirs:
                     dir_links.append(absolute_url)
             else:
@@ -95,13 +96,13 @@ class HirisePDSIndexerDFS:
         """
         dtm_url = None
         ortho_url = None
-        
+
         for file_url in file_urls:
-            filename = file_url.split('/')[-1]
-            
+            filename = file_url.split("/")[-1]
+
             if not dtm_url and self.dtm_pattern.search(filename):
                 dtm_url = file_url
-            
+
             if not ortho_url and self.ortho_pattern.search(filename):
                 ortho_url = file_url
 
@@ -121,7 +122,7 @@ class HirisePDSIndexerDFS:
         Varre o PDS usando DFS iterativo e indexa os pares de DTM/Orthoimage.
 
         Args:
-            max_pairs: O número máximo de pares para encontrar. 
+            max_pairs: O número máximo de pares para encontrar.
                          Se None, busca todos.
 
         Returns:
@@ -131,7 +132,7 @@ class HirisePDSIndexerDFS:
         self.visited_dirs = set()
 
         stack: List[str] = list(self.start_urls)
-        
+
         logger.info(f"Iniciando varredura DFS em {len(stack)} URLs base...")
 
         while stack:
@@ -140,7 +141,7 @@ class HirisePDSIndexerDFS:
                 break
 
             current_url = stack.pop()
-            
+
             if current_url in self.visited_dirs:
                 continue
 
@@ -151,7 +152,7 @@ class HirisePDSIndexerDFS:
 
             if file_links:
                 found_pair = self._process_leaf_page(file_links)
-                
+
                 if found_pair:
                     continue
 

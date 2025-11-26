@@ -28,7 +28,11 @@ def test_dataset_cli_stubbed(monkeypatch, tmp_path, capsys):
 
     monkeypatch.setattr(dataset_cli, "DatasetBuilder", FakeBuilder)
     monkeypatch.setattr(dataset_cli, "get_profile", fake_profile)
-    monkeypatch.setattr(dataset_cli, "logger", types.SimpleNamespace(info=lambda *a, **k: None, error=lambda *a, **k: None))
+    monkeypatch.setattr(
+        dataset_cli,
+        "logger",
+        types.SimpleNamespace(info=lambda *a, **k: None, error=lambda *a, **k: None),
+    )
 
     monkeypatch.setattr(sys, "argv", ["prog", "--profile", "prod", "--mode", "local"])
     dataset_cli.main()

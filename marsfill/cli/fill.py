@@ -1,4 +1,3 @@
-
 import argparse
 import os
 import shutil
@@ -44,14 +43,16 @@ def upload_artifacts_to_s3(local_dir: Path, remote_prefix: str, s3_client: Any) 
 
 def main():
     parser = argparse.ArgumentParser(
-        prog="Mars DTM Fill",
-        description="CLI para preenchimento de lacunas em DTMs",
-        epilog=""
+        prog="Mars DTM Fill", description="CLI para preenchimento de lacunas em DTMs", epilog=""
     )
 
     parser.add_argument("--test", "-t", required=True, help="Identificador do teste (ex: a, b, c)")
-    parser.add_argument("--profile", "-p", default="prod", help="Perfil de configuração [prod|test]")
-    parser.add_argument("--mode", "-m", required=True, choices=["local", "s3"], help="Fonte/destino dos dados")
+    parser.add_argument(
+        "--profile", "-p", default="prod", help="Perfil de configuração [prod|test]"
+    )
+    parser.add_argument(
+        "--mode", "-m", required=True, choices=["local", "s3"], help="Fonte/destino dos dados"
+    )
 
     args = parser.parse_args()
 
@@ -91,18 +92,16 @@ def main():
     padding_size = int(fill_cfg.get("padding_size", 128))
     tile_size = int(fill_cfg.get("tile_size", 512))
 
-    evaluator = Evaluator(pretrained_model_name=AvailableModels.INTEL_DPT_LARGE, model_path_uri=str(model_path))
-    filler = DTMFiller(
-        evaluator=evaluator,
-        padding_size=padding_size,
-        tile_size=tile_size
+    evaluator = Evaluator(
+        pretrained_model_name=AvailableModels.INTEL_DPT_LARGE, model_path_uri=str(model_path)
     )
+    filler = DTMFiller(evaluator=evaluator, padding_size=padding_size, tile_size=tile_size)
 
     filled_uri, mask_uri, local_filled_path, local_mask_path, local_original_dtm = filler.fill(
         dtm_path=dtm_path,
         ortho_path=ortho_path,
         output_root=str(output_dir),
-        keep_local_output=(args.mode == "s3")
+        keep_local_output=(args.mode == "s3"),
     )
 
     # Métricas e gráficos (sempre calculados localmente)
@@ -110,9 +109,7 @@ def main():
     stats = FillerStats(output_dir=local_output_dir)
 
     metrics, gt_arr, filled_arr, eval_mask = stats.calculate_metrics(
-        gt_path=local_original_dtm,
-        filled_path=local_filled_path,
-        mask_path=local_mask_path
+        gt_path=local_original_dtm, filled_path=local_filled_path, mask_path=local_mask_path
     )
     stats.plot_results(eval_mask=eval_mask, filled_arr=filled_arr, gt_arr=gt_arr, metrics=metrics)
 

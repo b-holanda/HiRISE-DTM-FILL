@@ -17,12 +17,15 @@ from marsfill.model.combined_loss import LossWeights, CombinedLoss
 from marsfill.model.hirise_dataset import StreamingHiRISeDataset
 from marsfill.utils import Logger, list_parquet_files
 
+
 class AvailableDevices(Enum):
     GPU = "cuda"
     CPU = "cpu"
 
+
 class AvailableModels(Enum):
     INTEL_DPT_LARGE = "Intel/dpt-large"
+
 
 class MarsDepthTrainer:
     """
@@ -49,7 +52,7 @@ class MarsDepthTrainer:
         injected_model: Optional[torch.nn.Module] = None,
         injected_optimizer: Optional[optim.Optimizer] = None,
         s3_client: Optional[boto3.client] = None,
-        logger_instance: Optional[Logger] = None
+        logger_instance: Optional[Logger] = None,
     ) -> None:
         """
         Inicializa o treinador com as configurações de hiperparâmetros, caminhos e ambiente.
@@ -75,16 +78,16 @@ class MarsDepthTrainer:
             logger_instance (Optional[Logger]): Instância de logger customizada.
         """
         self.logger = logger_instance if logger_instance else Logger()
-        
+
         self.is_external_distributed = is_distributed
         self.external_local_rank = local_rank
         self.external_global_rank = global_rank
         self.external_world_size = world_size
-        
+
         self.batch_size = batch_size
         self.total_epochs = total_epochs
         self.selected_model_name = selected_model_name
-        
+
         self.storage_mode = storage_mode
         self.dataset_root = dataset_root
         self.s3_client = s3_client
@@ -98,25 +101,31 @@ class MarsDepthTrainer:
             self.logger.info(f"Fonte de Validação:   {self.validation_uri}")
             self.logger.info(f"Destino do Modelo:    {self.model_output_uri}")
 
-        self.image_processor = DPTImageProcessor.from_pretrained(selected_model_name.value, do_rescale=False)
+        self.image_processor = DPTImageProcessor.from_pretrained(
+            selected_model_name.value, do_rescale=False
+        )
         self.loss_calculator = CombinedLoss(loss_weights=loss_weights).to(self.device)
-        self.gradient_scaler = GradScaler("cuda") if self.device.type == "cuda" else GradScaler("cpu")
+        self.gradient_scaler = (
+            GradScaler("cuda") if self.device.type == "cuda" else GradScaler("cpu")
+        )
 
         if injected_model:
             raw_model = injected_model.to(self.device)
         else:
-            raw_model = DPTForDepthEstimation.from_pretrained(selected_model_name.value).to(self.device) # type: ignore
+            raw_model = DPTForDepthEstimation.from_pretrained(selected_model_name.value).to(
+                self.device
+            )  # type: ignore
 
         if injected_optimizer:
             self.optimizer = injected_optimizer
         else:
-            self.optimizer = optim.AdamW(raw_model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+            self.optimizer = optim.AdamW(
+                raw_model.parameters(), lr=learning_rate, weight_decay=weight_decay
+            )
 
         if self.is_distributed_mode:
             self.model = DistributedDataParallel(
-                raw_model, 
-                device_ids=[self.local_rank], 
-                find_unused_parameters=True
+                raw_model, device_ids=[self.local_rank], find_unused_parameters=True
             )
         else:
             self.model = raw_model
@@ -128,10 +137,10 @@ class MarsDepthTrainer:
         Parâmetros:
             input_prefix (str): Caminho relativo para entrada dos dados.
             output_prefix (str): Caminho relativo para saída do modelo.
-        
+
         Retorno:
             None: Atualiza os atributos self.training_uri, self.validation_uri e self.model_output_uri.
-        
+
         Levanta:
             ValueError: Se o storage_mode não for 'local' nem 's3'.
         """
@@ -143,16 +152,18 @@ class MarsDepthTrainer:
             self.training_uri = f"{base_uri}/{clean_input}/train"
             self.validation_uri = f"{base_uri}/{clean_input}/validation"
             self.model_output_uri = f"{base_uri}/{clean_output}/"
-            
+
             if not self.s3_client:
-                self.s3_client = boto3.client('s3')
+                self.s3_client = boto3.client("s3")
 
         elif self.storage_mode == "local":
             base_path = Path(__file__).parent.parent.parent / Path(self.dataset_root)
             self.training_uri = str(base_path / clean_input / "train")
             self.validation_uri = str(base_path / clean_input / "validation")
-            self.model_output_uri = Path(__file__).parent.parent.parent / str(base_path / clean_output)
-            
+            self.model_output_uri = Path(__file__).parent.parent.parent / str(
+                base_path / clean_output
+            )
+
         else:
             raise ValueError("Storage mode deve ser 'local' ou 's3'")
 
@@ -169,11 +180,11 @@ class MarsDepthTrainer:
             self.world_size = self.external_world_size
             self.global_rank = self.external_global_rank
             self.local_rank = self.external_local_rank
-        elif 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
+        elif "RANK" in os.environ and "WORLD_SIZE" in os.environ:
             self.is_distributed_mode = True
-            self.world_size = int(os.environ['WORLD_SIZE'])
-            self.global_rank = int(os.environ['RANK'])
-            self.local_rank = int(os.environ.get('LOCAL_RANK', 0))
+            self.world_size = int(os.environ["WORLD_SIZE"])
+            self.global_rank = int(os.environ["RANK"])
+            self.local_rank = int(os.environ.get("LOCAL_RANK", 0))
         else:
             self.is_distributed_mode = False
             self.world_size = 1
@@ -185,11 +196,11 @@ class MarsDepthTrainer:
             torch.cuda.set_device(self.local_rank)
         else:
             self.device = torch.device("cpu")
-            
-        self.is_master_process = (self.global_rank == 0)
+
+        self.is_master_process = self.global_rank == 0
 
         if self.is_distributed_mode and not distributed.is_initialized():
-             distributed.init_process_group(backend='nccl')
+            distributed.init_process_group(backend="nccl")
 
     def _upload_file_to_s3(self, local_file_path: str, filename: str) -> None:
         """
@@ -203,10 +214,10 @@ class MarsDepthTrainer:
             None
         """
         bucket_name = self.dataset_root
-        
+
         prefix = self.model_output_uri.replace(f"s3://{bucket_name}/", "")
         s3_key = f"{prefix.strip('/')}/{filename}"
-        
+
         try:
             self.s3_client.upload_file(local_file_path, bucket_name, s3_key)
             self.logger.info(f"☁️  Upload S3 concluído: s3://{bucket_name}/{s3_key}")
@@ -228,17 +239,18 @@ class MarsDepthTrainer:
             return
 
         model_to_save = self.model.module if self.is_distributed_mode else self.model
-        
+
         if self.storage_mode == "local":
             output_path = Path(self.model_output_uri)
             output_path.mkdir(parents=True, exist_ok=True)
-            
+
             full_path = output_path / filename
             torch.save(model_to_save.state_dict(), full_path)
             self.logger.info(f"💾 Modelo salvo localmente em: {full_path}")
-            
+
         elif self.storage_mode == "s3":
             import tempfile
+
             with tempfile.NamedTemporaryFile(suffix=".pth", delete=True) as temporary_file:
                 torch.save(model_to_save.state_dict(), temporary_file.name)
                 self.logger.info(f"Salvamento temporário concluído. Iniciando upload para S3...")
@@ -258,32 +270,36 @@ class MarsDepthTrainer:
         accumulated_loss = 0.0
         self.model.train()
         batch_counter = 0
-        
+
         for batch_index, (input_images, ground_truth_depth) in enumerate(data_loader):
             input_images = input_images.to(self.device)
             ground_truth_depth = ground_truth_depth.to(self.device)
-            
+
             self.optimizer.zero_grad()
-            
+
             with autocast(self.device.type):
                 outputs = self.model(input_images)
                 predicted_depth_map = outputs.predicted_depth.unsqueeze(1)
                 predicted_depth_resized = F.interpolate(
-                    predicted_depth_map, size=ground_truth_depth.shape[2:],
-                    mode="bilinear", align_corners=False
+                    predicted_depth_map,
+                    size=ground_truth_depth.shape[2:],
+                    mode="bilinear",
+                    align_corners=False,
                 )
-                total_loss, _, _, _ = self.loss_calculator(predicted_depth_resized, ground_truth_depth)
-            
+                total_loss, _, _, _ = self.loss_calculator(
+                    predicted_depth_resized, ground_truth_depth
+                )
+
             self.gradient_scaler.scale(total_loss).backward()
             self.gradient_scaler.step(optimizer=self.optimizer)
             self.gradient_scaler.update()
-            
+
             accumulated_loss += total_loss.item()
             batch_counter += 1
-            
+
             if (batch_index + 1) % 50 == 0 and self.is_master_process:
                 self.logger.info(f"Step {batch_index + 1}, Loss: {total_loss.item():.4f}")
-        
+
         return accumulated_loss / max(batch_counter, 1)
 
     def _execute_validation_step(self, data_loader: DataLoader) -> float:
@@ -307,10 +323,14 @@ class MarsDepthTrainer:
                     outputs = self.model(input_images)
                     predicted_depth = outputs.predicted_depth.unsqueeze(1)
                     predicted_resized = F.interpolate(
-                        predicted_depth, size=ground_truth_depth.shape[2:],
-                        mode="bilinear", align_corners=False
+                        predicted_depth,
+                        size=ground_truth_depth.shape[2:],
+                        mode="bilinear",
+                        align_corners=False,
                     )
-                    total_loss, _, _, _ = self.loss_calculator(predicted_resized, ground_truth_depth)
+                    total_loss, _, _, _ = self.loss_calculator(
+                        predicted_resized, ground_truth_depth
+                    )
                 accumulated_loss += total_loss.item()
                 batch_counter += 1
         return accumulated_loss / max(batch_counter, 1)
@@ -321,7 +341,7 @@ class MarsDepthTrainer:
 
         Retorno:
             Tuple[DataLoader, DataLoader]: Uma tupla contendo (training_loader, validation_loader).
-        
+
         Levanta:
             FileNotFoundError: Se nenhum arquivo for encontrado no diretório de treino.
         """
@@ -334,17 +354,31 @@ class MarsDepthTrainer:
             raise FileNotFoundError(message)
 
         if self.is_master_process:
-            self.logger.info(f"Arquivos Treino: {len(training_files)} | Validação: {len(validation_files)}")
+            self.logger.info(
+                f"Arquivos Treino: {len(training_files)} | Validação: {len(validation_files)}"
+            )
 
-        training_dataset = StreamingHiRISeDataset(training_files, self.image_processor, 
-                                                  self.global_rank, self.world_size, 512)
-        validation_dataset = StreamingHiRISeDataset(validation_files, self.image_processor, 
-                                                    self.global_rank, self.world_size, 512)
-        
-        training_loader = DataLoader(training_dataset, batch_size=self.batch_size, num_workers=4, 
-                                     pin_memory=(self.device.type=="cuda"), shuffle=False)
-        validation_loader = DataLoader(validation_dataset, batch_size=self.batch_size, num_workers=4, 
-                                       pin_memory=(self.device.type=="cuda"), shuffle=False)
+        training_dataset = StreamingHiRISeDataset(
+            training_files, self.image_processor, self.global_rank, self.world_size, 512
+        )
+        validation_dataset = StreamingHiRISeDataset(
+            validation_files, self.image_processor, self.global_rank, self.world_size, 512
+        )
+
+        training_loader = DataLoader(
+            training_dataset,
+            batch_size=self.batch_size,
+            num_workers=4,
+            pin_memory=(self.device.type == "cuda"),
+            shuffle=False,
+        )
+        validation_loader = DataLoader(
+            validation_dataset,
+            batch_size=self.batch_size,
+            num_workers=4,
+            pin_memory=(self.device.type == "cuda"),
+            shuffle=False,
+        )
         return training_loader, validation_loader
 
     def run_training_loop(self) -> None:
@@ -353,23 +387,23 @@ class MarsDepthTrainer:
         """
         if self.is_master_process:
             self.logger.info(f"Iniciando loop de treinamento...")
-        
+
         training_loader, validation_loader = self.create_dataloaders()
-        
-        best_loss = float('inf')
+
+        best_loss = float("inf")
         patience_limit = 5
         epochs_without_improvement = 0
-        
+
         for epoch_index in range(self.total_epochs):
             if self.is_master_process:
                 self.logger.info(f"\n--- ÉPOCA {epoch_index + 1}/{self.total_epochs} ---")
-            
+
             training_loss = self._execute_training_step(training_loader)
             validation_loss = self._execute_validation_step(validation_loader)
-            
+
             if self.is_master_process:
                 self.logger.info(f"Treino: {training_loss:.4f} | Validação: {validation_loss:.4f}")
-                
+
                 if validation_loss < best_loss:
                     self.logger.info(f"Melhoria: {best_loss:.4f} -> {validation_loss:.4f}")
                     best_loss = validation_loss
@@ -377,11 +411,13 @@ class MarsDepthTrainer:
                     self._save_model_checkpoint("marsfill_model.pth")
                 else:
                     epochs_without_improvement += 1
-                    self.logger.info(f"Sem melhoria ({epochs_without_improvement}/{patience_limit})")
-                
+                    self.logger.info(
+                        f"Sem melhoria ({epochs_without_improvement}/{patience_limit})"
+                    )
+
                 if epochs_without_improvement >= patience_limit:
                     self.logger.info("Early Stopping ativado.")
                     break
-        
+
         if self.is_distributed_mode and distributed.is_initialized():
             distributed.destroy_process_group()

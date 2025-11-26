@@ -18,6 +18,7 @@ dependencies:
   - matplotlib
   - pytest
   - pytest-cov
+  - ruff
   - blas=*=openblas
   - nomkl
   - pip

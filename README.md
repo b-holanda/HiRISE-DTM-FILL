@@ -59,6 +59,16 @@ pytest
 pytest --cov --cov-report=term-missing --cov-report=html
 ```
 
+### Lint/Format (Ruff)
+
+```bash
+conda activate marsfill-env
+# Formatar código
+ruff format .
+# Checar lint
+ruff check .
+```
+
 ### 1) Gerar rótulos de treinamento (100 pares DTM+ORTHO)
 
 Requisitos recomendados:

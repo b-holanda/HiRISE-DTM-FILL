@@ -18,12 +18,8 @@ def test_streaming_dataset_iter(tmp_path):
     ortho = np.ones((tile_size, tile_size), dtype=np.float32)
     dtm = np.zeros((tile_size, tile_size), dtype=np.float32)
     table = pa.Table.from_arrays(
-        [
-            pa.array([ortho.tobytes()]),
-            pa.array([dtm.tobytes()]),
-            pa.array(["pair"])
-        ],
-        names=["ortho_bytes", "dtm_bytes", "pair_id"]
+        [pa.array([ortho.tobytes()]), pa.array([dtm.tobytes()]), pa.array(["pair"])],
+        names=["ortho_bytes", "dtm_bytes", "pair_id"],
     )
     parquet_path = tmp_path / "sample.parquet"
     pq.write_table(table, parquet_path)
@@ -33,7 +29,7 @@ def test_streaming_dataset_iter(tmp_path):
         image_processor=FakeProcessor(),
         process_rank=0,
         total_process_count=1,
-        image_tile_size=tile_size
+        image_tile_size=tile_size,
     )
 
     items = list(dataset)

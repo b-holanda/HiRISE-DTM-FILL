@@ -26,6 +26,7 @@ class FakeModel:
         class Output:
             def __init__(self):
                 self.predicted_depth = torch.ones(1, 2, 2)
+
         return Output()
 
 
@@ -46,12 +47,16 @@ def test_evaluator_local_weights(tmp_path, monkeypatch):
     weights_path = tmp_path / "model.pth"
     torch.save({"layer": torch.tensor([1, 2, 3])}, weights_path)
 
-    monkeypatch.setattr(eval_module.DPTForDepthEstimation, "from_pretrained", lambda *a, **k: FakeModel())
-    monkeypatch.setattr(eval_module.DPTImageProcessor, "from_pretrained", FakeProcessor.from_pretrained)
+    monkeypatch.setattr(
+        eval_module.DPTForDepthEstimation, "from_pretrained", lambda *a, **k: FakeModel()
+    )
+    monkeypatch.setattr(
+        eval_module.DPTImageProcessor, "from_pretrained", FakeProcessor.from_pretrained
+    )
 
     evaluator = eval_module.Evaluator(
         pretrained_model_name=eval_module.AvailableModels.INTEL_DPT_LARGE,
-        model_path_uri=str(weights_path)
+        model_path_uri=str(weights_path),
     )
     img = np.ones((2, 2, 3), dtype=np.float32)
     depth = evaluator.predict_depth(img, target_height=2, target_width=2)
@@ -73,11 +78,15 @@ def test_evaluator_s3_download(monkeypatch, tmp_path):
 
     fake_s3 = FakeS3()
     monkeypatch.setattr(eval_module, "boto3", type("B", (), {"client": lambda *a, **k: fake_s3}))
-    monkeypatch.setattr(eval_module.DPTForDepthEstimation, "from_pretrained", lambda *a, **k: FakeModel())
-    monkeypatch.setattr(eval_module.DPTImageProcessor, "from_pretrained", FakeProcessor.from_pretrained)
+    monkeypatch.setattr(
+        eval_module.DPTForDepthEstimation, "from_pretrained", lambda *a, **k: FakeModel()
+    )
+    monkeypatch.setattr(
+        eval_module.DPTImageProcessor, "from_pretrained", FakeProcessor.from_pretrained
+    )
 
     evaluator = eval_module.Evaluator(
         pretrained_model_name=eval_module.AvailableModels.INTEL_DPT_LARGE,
-        model_path_uri="s3://bucket/model.pth"
+        model_path_uri="s3://bucket/model.pth",
     )
     assert fake_s3.calls  # download invoked
