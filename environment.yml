@@ -9,6 +9,8 @@ dependencies:
   - scipy
   - scikit-learn
   - gdal
+  - libgdal-jp2openjpeg
+  - openjpeg
   - pyarrow
   - boto3
   - s3fs
