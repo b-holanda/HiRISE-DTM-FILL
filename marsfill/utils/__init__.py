@@ -100,9 +100,16 @@ class ApplicationLogger:
         """
         self._internal_logger.error(message, stack_info=True, exc_info=exception_info)
 
-    def exception(self, message: str) -> None:
-        """Atalho para logar exceções com stack trace."""
-        self._internal_logger.exception(message)
+    def exception(self, message: str, *args: Any, **kwargs: Any) -> None:
+        """
+        Atalho para logar exceções com stack trace, compatível com a API padrão do logging.
+
+        Args:
+            message: Texto ou template de mensagem.
+            *args: Argumentos para formatação da mensagem.
+            **kwargs: Parâmetros opcionais aceitos pelo logger.
+        """
+        self._internal_logger.exception(message, *args, **kwargs)
 
 
 # Alias público usado em todo o projeto
