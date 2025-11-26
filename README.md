@@ -37,6 +37,14 @@ O fluxo completo é:
   ![DPT Architecture](docs/images/dpt_architecture.jpg)
   *Diagrama conceitual do DPT baseado em ViT: encoder Transformer para contexto global e decoder de refinamento para produzir mapa de profundidade denso, usado como backbone do marsfill.*
 
+## Resultados
+
+- Resumo detalhado e figuras em `docs/results/README.md`.
+- Destaques:
+  - Construção do dataset: distribuição e tempo de geração de tiles válidos (`docs/images/build_dataset_*.png`).
+  - Alinhamento e tiling: exemplos de DTM bruto vs. alinhado e blocos 512×512 (`docs/images/dtm_*`, `docs/images/tile_*`).
+  - Testes: 21/21 passando; cobertura ~67% com relatório em GitHub Pages.
+
 
 ## Instalação
 
