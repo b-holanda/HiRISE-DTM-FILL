@@ -8,8 +8,8 @@ make:
   stride: 256
   s3_bucket: "hirise-dtm-fill" 
   s3_prefix: "dataset/v1/"
-  batch_size: 500
-  max_workers: 15 
+  batch_size: 100
+  max_workers: 10 
 
 train:
   threads: 8
