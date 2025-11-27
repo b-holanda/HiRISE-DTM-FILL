@@ -17,6 +17,12 @@ import zipfile
 import shutil
 import tempfile
 import time
+from typing import Optional
+
+try:
+    import psutil  # type: ignore
+except ImportError:  # pragma: no cover
+    psutil = None
 
 from marsfill.utils import Logger
 from marsfill.dataset.hirise_indexer import ProductPair, HirisePDSIndexerDFS
@@ -31,6 +37,27 @@ def _safe_unlink(path: str) -> None:
         gdal.Unlink(path)
     except RuntimeError:
         logger.debug(f"GDAL Unlink ignorado para {path}")
+
+
+def _available_memory_mb() -> float:
+    """Retorna memória disponível aproximada em MB."""
+    if psutil:
+        try:
+            return psutil.virtual_memory().available / (1024 * 1024)
+        except Exception:
+            pass
+
+    try:
+        with open("/proc/meminfo", "r", encoding="utf-8") as meminfo:
+            for line in meminfo:
+                if line.startswith("MemAvailable:"):
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        return float(parts[1]) / 1024.0
+    except Exception:
+        return -1.0
+
+    return -1.0
 
 
 class DatasetBuilder:
@@ -174,10 +201,11 @@ class DatasetBuilder:
                         if attempt == attempts:
                             raise
                         logger.warning(
-                            "Falha ao baixar %s (tentativa %s/%s): %s",
+                            "Falha ao baixar %s (tentativa %s/%s | mem disponível ~%.1f MB): %s",
                             url,
                             attempt,
                             attempts,
+                            _available_memory_mb(),
                             error,
                         )
                         time.sleep(delay_seconds)
@@ -285,10 +313,11 @@ class DatasetBuilder:
 
         except Exception as error:
             logger.exception(
-                "Erro processando par %s (split=%s, test_label=%s)",  # noqa: TRY401
+                "Erro processando par %s (split=%s, test_label=%s | mem disponível ~%.1f MB)",  # noqa: TRY401
                 pair_identifier,
                 dataset_split,
                 test_label,
+                _available_memory_mb(),
             )
             raise
 
@@ -442,6 +471,7 @@ class DatasetBuilder:
         gravar Parquets e empacotar artefatos.
         """
         logger.info("Iniciando pipeline...")
+        logger.info(f"Memória disponível inicial (aprox): {_available_memory_mb():.1f} MB")
         replacement_buffer = max(10, int(0.2 * self.total_samples))
         datasets = self._list_datasets(max_pairs=self.total_samples + replacement_buffer)
         logger.info(f"Indexados {len(datasets)} pares")
@@ -546,10 +576,11 @@ class DatasetBuilder:
                             )
                     except BrokenProcessPool as error:
                         logger.exception(
-                            "Pool de processos encerrado abruptamente para split=%s | ortho=%s | dtm=%s: %s",
+                            "Pool de processos encerrado abruptamente para split=%s | ortho=%s | dtm=%s | mem disponível ~%.1f MB: %s",
                             task_info.get("split"),
                             task_info.get("ortho_url"),
                             task_info.get("dtm_url"),
+                            _available_memory_mb(),
                             error,
                         )
                         futures_pending.clear()
