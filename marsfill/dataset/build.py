@@ -236,7 +236,7 @@ class DatasetBuilder:
                 yRes=abs(geo_transform[5]),
                 dstSRS=projection_ref,
                 resampleAlg="cubic",
-                creationOptions=["COMPRESS=LZW"],
+                creationOptions=["COMPRESS=LZW", "BIGTIFF=YES"],
             )
 
             aligned_dataset = gdal.Open(virtual_aligned_path)
