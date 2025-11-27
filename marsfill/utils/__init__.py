@@ -72,23 +72,23 @@ class ApplicationLogger:
 
         self._initialized = True
 
-    def info(self, message: str) -> None:
+    def info(self, message: str, *args: Any, **kwargs: Any) -> None:
         """
         Registra uma mensagem de nível INFO.
 
         Args:
             message: Texto a ser registrado.
         """
-        self._internal_logger.info(message)
+        self._internal_logger.info(message, *args, **kwargs)
 
-    def debug(self, message: str) -> None:
+    def debug(self, message: str, *args: Any, **kwargs: Any) -> None:
         """
         Registra uma mensagem de nível DEBUG.
 
         Args:
             message: Texto a ser registrado.
         """
-        self._internal_logger.debug(message)
+        self._internal_logger.debug(message, *args, **kwargs)
 
     def warning(self, message: str, *args: Any, **kwargs: Any) -> None:
         """
