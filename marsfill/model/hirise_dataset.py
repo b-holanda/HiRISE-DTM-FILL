@@ -75,15 +75,25 @@ class StreamingHiRISeDataset(IterableDataset):
         Retorno:
             Tuple[torch.Tensor, torch.Tensor]: Tupla contendo (pixel_values, dtm_tensor).
         """
-        orthophoto_numpy_array = np.frombuffer(ortho_bytes, dtype=np.float32).reshape(
-            self.image_tile_size, self.image_tile_size
-        )
+        # Dados vêm em float16 (pipeline atual) ou float32 (arquivos antigos/tests). Detectamos pelo tamanho.
+        expected_elements = self.image_tile_size * self.image_tile_size
 
-        digital_terrain_model_numpy_array = (
-            np.frombuffer(dtm_bytes, dtype=np.float32)
-            .reshape(self.image_tile_size, self.image_tile_size)
-            .copy()
-        )
+        def _decode(buffer: bytes) -> np.ndarray:
+            if len(buffer) == expected_elements * np.dtype(np.float16).itemsize:
+                return (
+                    np.frombuffer(buffer, dtype=np.float16)
+                    .reshape(self.image_tile_size, self.image_tile_size)
+                    .astype(np.float32)
+                )
+            return (
+                np.frombuffer(buffer, dtype=np.float32)
+                .reshape(self.image_tile_size, self.image_tile_size)
+                .astype(np.float32)
+            )
+
+        orthophoto_numpy_array = _decode(ortho_bytes)
+
+        digital_terrain_model_numpy_array = _decode(dtm_bytes).copy()
 
         orthophoto_rgb_array = np.stack(
             [orthophoto_numpy_array, orthophoto_numpy_array, orthophoto_numpy_array], axis=-1
