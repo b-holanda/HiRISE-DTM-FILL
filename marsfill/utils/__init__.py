@@ -90,14 +90,14 @@ class ApplicationLogger:
         """
         self._internal_logger.debug(message)
 
-    def warning(self, message: str) -> None:
+    def warning(self, message: str, *args: Any, **kwargs: Any) -> None:
         """
         Registra uma mensagem de nível WARNING.
 
         Args:
             message: Texto de aviso.
         """
-        self._internal_logger.warning(message)
+        self._internal_logger.warning(message, *args, **kwargs)
 
     def error(self, message: str, exception_info: bool = True) -> None:
         """
