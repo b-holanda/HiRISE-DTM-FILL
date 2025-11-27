@@ -9,7 +9,7 @@ make:
   s3_bucket: "hirise-dtm-fill" 
   s3_prefix: "dataset/v1/"
   batch_size: 100
-  max_workers: 10 
+  max_workers: 12 
 
 train:
   threads: 8

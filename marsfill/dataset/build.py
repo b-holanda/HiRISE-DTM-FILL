@@ -3,12 +3,14 @@ import requests
 from requests.exceptions import RequestException
 import random
 import boto3
+from boto3.s3.transfer import TransferConfig
 import io
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 from pathlib import Path
 import numpy as np
+import gc
 from osgeo import gdal
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from concurrent.futures.process import BrokenProcessPool
@@ -298,13 +300,14 @@ class DatasetBuilder:
                     min_dtm, max_dtm = dtm_tile.min(), dtm_tile.max()
                     dtm_normalized = (dtm_tile - min_dtm) / (max_dtm - min_dtm + 1e-8)
 
+                    # Armazenar como float16 reduz pela metade a memória usada
                     processed_results.append(
                         {
                             "pair_id": pair_identifier,
                             "tile_x": x_coordinate,
                             "tile_y": y_coordinate,
-                            "ortho_bytes": ortho_normalized.tobytes(),
-                            "dtm_bytes": dtm_normalized.tobytes(),
+                            "ortho_bytes": ortho_normalized.astype(np.float16).tobytes(),
+                            "dtm_bytes": dtm_normalized.astype(np.float16).tobytes(),
                         }
                     )
 
@@ -366,8 +369,17 @@ class DatasetBuilder:
 
                 s3_key = f"{self.s3_prefix}{dataset_split}/{file_name}"
 
-                self.s3_client.put_object(
-                    Bucket=self.s3_bucket_name, Key=s3_key, Body=output_buffer
+                transfer_config = TransferConfig(
+                    multipart_threshold=8 * 1024 * 1024,
+                    multipart_chunksize=64 * 1024 * 1024,
+                    max_concurrency=4,
+                    use_threads=True,
+                )
+                self.s3_client.upload_fileobj(
+                    output_buffer,
+                    self.s3_bucket_name,
+                    s3_key,
+                    Config=transfer_config,
                 )
                 logger.info(
                     f"☁️ [{dataset_split.upper()}] S3 Upload: {s3_key} ({len(dataframe)} tiles)"
@@ -452,10 +464,17 @@ class DatasetBuilder:
 
                     try:
                         with open(local_zip_path, "rb") as file_pointer:
-                            self.s3_client.put_object(
-                                Bucket=self.s3_bucket_name,
-                                Key=s3_destination_key,
-                                Body=file_pointer,
+                            transfer_config = TransferConfig(
+                                multipart_threshold=8 * 1024 * 1024,
+                                multipart_chunksize=64 * 1024 * 1024,
+                                max_concurrency=4,
+                                use_threads=True,
+                            )
+                            self.s3_client.upload_fileobj(
+                                file_pointer,
+                                self.s3_bucket_name,
+                                s3_destination_key,
+                                Config=transfer_config,
                             )
                         logger.info(
                             f"✅ Upload concluído: s3://{self.s3_bucket_name}/{s3_destination_key}"
@@ -530,14 +549,19 @@ class DatasetBuilder:
 
                         if tiles_list:
                             data_buffers[split_name].extend(tiles_list)
-                            if len(data_buffers[split_name]) >= self.batch_size:
+                            while len(data_buffers[split_name]) >= self.batch_size:
+                                batch_data = data_buffers[split_name][: self.batch_size]
                                 self._save_batch(
-                                    data_list=data_buffers[split_name],
+                                    data_list=batch_data,
                                     dataset_split=split_name,
                                     batch_index=batch_counters[split_name],
                                 )
-                                data_buffers[split_name] = []
                                 batch_counters[split_name] += 1
+                                data_buffers[split_name] = data_buffers[split_name][
+                                    self.batch_size :
+                                ]
+                            del tiles_list
+                            gc.collect()
 
                     except RequestException as error:
                         logger.warning(
