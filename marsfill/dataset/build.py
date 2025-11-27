@@ -1,5 +1,6 @@
 import os
 import requests
+from requests.exceptions import RequestException
 import random
 import boto3
 import io
@@ -15,6 +16,7 @@ from typing import Optional, Tuple, List, Dict, Any
 import zipfile
 import shutil
 import tempfile
+import time
 
 from marsfill.utils import Logger
 from marsfill.dataset.hirise_indexer import ProductPair, HirisePDSIndexerDFS
@@ -84,7 +86,7 @@ class DatasetBuilder:
             self.s3_client = None
             logger.info(f"Modo Local: '{self.download_directory}'")
 
-    def _list_datasets(self) -> List[ProductPair]:
+    def _list_datasets(self, max_pairs: Optional[int] = None) -> List[ProductPair]:
         """
         Localiza pares DTM/ORTHO no repositório HiRISE.
 
@@ -92,7 +94,7 @@ class DatasetBuilder:
             Lista de pares de produtos encontrados.
         """
         indexer = HirisePDSIndexerDFS(self.urls_to_scan)
-        return indexer.index_pairs(max_pairs=self.total_samples)
+        return indexer.index_pairs(max_pairs=max_pairs or self.total_samples)
 
     def _prepare_assignments(self) -> None:
         """
@@ -160,9 +162,26 @@ class DatasetBuilder:
         try:
 
             def download_content_as_bytes(url: str) -> bytes:
-                with requests.get(url, stream=True, timeout=(15, 300)) as response:
-                    response.raise_for_status()
-                    return response.content
+                attempts = 5
+                delay_seconds = 2.0
+
+                for attempt in range(1, attempts + 1):
+                    try:
+                        with requests.get(url, stream=True, timeout=(15, 300)) as response:
+                            response.raise_for_status()
+                            return response.content
+                    except RequestException as error:
+                        if attempt == attempts:
+                            raise
+                        logger.warning(
+                            "Falha ao baixar %s (tentativa %s/%s): %s",
+                            url,
+                            attempt,
+                            attempts,
+                            error,
+                        )
+                        time.sleep(delay_seconds)
+                        delay_seconds *= 2
 
             ortho_bytes = download_content_as_bytes(ortho_image_url)
             dtm_bytes = download_content_as_bytes(digital_terrain_model_url)
@@ -423,14 +442,18 @@ class DatasetBuilder:
         gravar Parquets e empacotar artefatos.
         """
         logger.info("Iniciando pipeline...")
-        datasets = self._list_datasets()
+        replacement_buffer = max(10, int(0.2 * self.total_samples))
+        datasets = self._list_datasets(max_pairs=self.total_samples + replacement_buffer)
         logger.info(f"Indexados {len(datasets)} pares")
 
         self._prepare_assignments()
 
+        primary_datasets = datasets[: self.total_samples]
+        replacement_queue = datasets[self.total_samples :]
+
         tasks = []
         test_counter = 0
-        for pair in datasets:
+        for pair in primary_datasets:
             destination_split = self.assignments.pop() if self.assignments else "train"
             test_label = None
             if destination_split == "test":
@@ -466,40 +489,80 @@ class DatasetBuilder:
                 for task in tasks
             }
 
-            for future in as_completed(future_to_task):
-                task_info = future_to_task[future]
-                try:
-                    split_name, tiles_list = future.result()
+            futures_pending = set(future_to_task.keys())
 
-                    if tiles_list:
-                        data_buffers[split_name].extend(tiles_list)
-                        if len(data_buffers[split_name]) >= self.batch_size:
-                            self._save_batch(
-                                data_list=data_buffers[split_name],
-                                dataset_split=split_name,
-                                batch_index=batch_counters[split_name],
+            while futures_pending:
+                for future in as_completed(list(futures_pending)):
+                    futures_pending.discard(future)
+                    task_info = future_to_task.pop(future)
+                    try:
+                        split_name, tiles_list = future.result()
+
+                        if tiles_list:
+                            data_buffers[split_name].extend(tiles_list)
+                            if len(data_buffers[split_name]) >= self.batch_size:
+                                self._save_batch(
+                                    data_list=data_buffers[split_name],
+                                    dataset_split=split_name,
+                                    batch_index=batch_counters[split_name],
+                                )
+                                data_buffers[split_name] = []
+                                batch_counters[split_name] += 1
+
+                    except RequestException as error:
+                        logger.warning(
+                            "Download falhou para split=%s | test_label=%s | ortho=%s | dtm=%s. Removendo par e buscando reposição: %s",
+                            task_info.get("split"),
+                            task_info.get("test_label"),
+                            task_info.get("ortho_url"),
+                            task_info.get("dtm_url"),
+                            error,
+                        )
+
+                        if replacement_queue:
+                            new_pair = replacement_queue.pop(0)
+                            new_task = {
+                                "dtm_url": new_pair.dtm_url,
+                                "ortho_url": new_pair.ortho_url,
+                                "split": task_info.get("split"),
+                                "test_label": task_info.get("test_label"),
+                            }
+                            new_future = executor.submit(
+                                self.worker_process_pair,
+                                new_task,
+                                self.tile_size,
+                                self.stride_size,
+                                self.download_directory,
+                                self.s3_bucket_name,
+                                self.s3_prefix,
                             )
-                            data_buffers[split_name] = []
-                            batch_counters[split_name] += 1
-
-                except BrokenProcessPool as error:
-                    logger.exception(
-                        "Pool de processos encerrado abruptamente para split=%s | ortho=%s | dtm=%s: %s",
-                        task_info.get("split"),
-                        task_info.get("ortho_url"),
-                        task_info.get("dtm_url"),
-                        error,
-                    )
-                    break
-                except Exception as error:
-                    logger.exception(
-                        "Erro no loop principal para split=%s | test_label=%s | ortho=%s | dtm=%s: %s",
-                        task_info.get("split"),
-                        task_info.get("test_label"),
-                        task_info.get("ortho_url"),
-                        task_info.get("dtm_url"),
-                        error,
-                    )
+                            future_to_task[new_future] = new_task
+                            futures_pending.add(new_future)
+                            logger.info(
+                                "Par substituído: novo ortho=%s | dtm=%s para split=%s",
+                                new_task["ortho_url"],
+                                new_task["dtm_url"],
+                                new_task["split"],
+                            )
+                    except BrokenProcessPool as error:
+                        logger.exception(
+                            "Pool de processos encerrado abruptamente para split=%s | ortho=%s | dtm=%s: %s",
+                            task_info.get("split"),
+                            task_info.get("ortho_url"),
+                            task_info.get("dtm_url"),
+                            error,
+                        )
+                        futures_pending.clear()
+                        break
+                    except Exception as error:
+                        logger.exception(
+                            "Erro no loop principal para split=%s | test_label=%s | ortho=%s | dtm=%s: %s",
+                            task_info.get("split"),
+                            task_info.get("test_label"),
+                            task_info.get("ortho_url"),
+                            task_info.get("dtm_url"),
+                            error,
+                        )
 
         for split_name, buffer_data in data_buffers.items():
             if buffer_data:
