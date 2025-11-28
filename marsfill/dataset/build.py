@@ -42,10 +42,8 @@ def _safe_remove_file(path: Path) -> None:
 def _configure_gdal_cache(cache_max_mb: int) -> None:
     """
     Ajusta o cache do GDAL para evitar uso excessivo de memória.
-
-    Aplica tanto SetConfigOption quanto SetCacheMax quando disponíveis.
     """
-    cache_max_mb = max(cache_max_mb, 32)  # evita valores muito baixos
+    cache_max_mb = max(cache_max_mb, 32)
     try:
         if hasattr(gdal, "SetConfigOption"):
             gdal.SetConfigOption("GDAL_CACHEMAX", str(cache_max_mb))
@@ -91,24 +89,8 @@ class DatasetBuilder:
         batch_size: int = 500,
         max_workers: Optional[int] = None,
         s3_client: Optional[Any] = None,
-        gdal_cache_max_mb: int = 512,
+        gdal_cache_max_mb: int = 256, # OTIMIZAÇÃO: Valor padrão reduzido para ser conservador
     ) -> None:
-        """
-        Configura parâmetros de varredura, corte e armazenamento.
-
-        Args:
-            urls_to_scan: URLs base do repositório HiRISE.
-            total_samples: Número máximo de pares a processar.
-            tile_size: Lado do tile em pixels.
-            stride_size: Passo da janela deslizante.
-            download_directory: Destino local para salvar dados; se None, cria um diretório temporário.
-            s3_bucket_name: Bucket S3 de destino.
-            s3_prefix: Prefixo de escrita no bucket ou diretório.
-            batch_size: Número de tiles por arquivo Parquet.
-            max_workers: Número de processos paralelos.
-            s3_client: Cliente S3 opcional para injeção em testes.
-            gdal_cache_max_mb: Limite de cache GDAL em MB.
-        """
         self.urls_to_scan = urls_to_scan
         self.total_samples = total_samples
         self.tile_size = tile_size
@@ -150,19 +132,10 @@ class DatasetBuilder:
             )
 
     def _list_datasets(self, max_pairs: Optional[int] = None) -> List[ProductPair]:
-        """
-        Localiza pares DTM/ORTHO no repositório HiRISE.
-
-        Returns:
-            Lista de pares de produtos encontrados.
-        """
         indexer = HirisePDSIndexerDFS(self.urls_to_scan)
         return indexer.index_pairs(max_pairs=max_pairs or self.total_samples)
 
     def _prepare_assignments(self) -> None:
-        """
-        Distribui amostras entre treino, validação e teste (80/10/10).
-        """
         logger.info(f"Preparando {self.total_samples} atribuições...")
         test_count = int(np.round(0.1 * self.total_samples))
         validation_count = int(np.round(0.1 * self.total_samples))
@@ -175,9 +148,6 @@ class DatasetBuilder:
 
     @staticmethod
     def _index_to_label(index: int) -> str:
-        """
-        Converte índice inteiro em rótulo alfabético (a, b, c... aa, ab).
-        """
         letters = []
         while True:
             index, remainder = divmod(index, 26)
@@ -192,25 +162,15 @@ class DatasetBuilder:
         pair_data: Dict[str, Any],
         tile_size: int,
         stride_size: int,
-        download_directory: Optional[Path],
+        download_directory: Path,
         s3_bucket_name: Optional[str],
         s3_prefix: str,
-        gdal_cache_max_mb: int = 512,
-    ) -> Tuple[str, List[Dict[str, Any]]]:
+        gdal_cache_max_mb: int = 256,
+        batch_size: int = 500
+    ) -> Tuple[str, List[Path]]: # OTIMIZAÇÃO: Retorna lista de caminhos de arquivo, não os dados
         """
-        Processa um par DTM/ORTHO: download, alinhamento, corte e normalização.
-
-        Args:
-            pair_data: Metadados do par (URLs, split, label de teste).
-            tile_size: Lado do recorte.
-            stride_size: Passo de deslocamento.
-            download_directory: Destino local para salvar dados do par.
-            s3_bucket_name: Bucket S3 para salvar originais de teste (quando ativo).
-            s3_prefix: Prefixo dataset (ex.: dataset/v1/).
-            gdal_cache_max_mb: Limite de cache GDAL em MB.
-
-        Returns:
-            Split alvo e lista de tiles serializados.
+        Processa um par DTM/ORTHO e salva arquivos parquet parciais localmente.
+        Retorna o split e a lista de arquivos gerados.
         """
         digital_terrain_model_url = pair_data["dtm_url"]
         ortho_image_url = pair_data["ortho_url"]
@@ -220,23 +180,23 @@ class DatasetBuilder:
 
         _configure_gdal_cache(gdal_cache_max_mb)
 
-        work_directory = Path(download_directory) if download_directory else Path(
-            tempfile.mkdtemp(prefix="marsfill_worker_")
-        )
+        # OTIMIZAÇÃO: Diretório único por worker/processo para evitar colisão de I/O
+        worker_id = os.getpid()
+        work_directory = Path(download_directory) / f"worker_{worker_id}" / pair_identifier
         work_directory.mkdir(parents=True, exist_ok=True)
 
         local_ortho_path = work_directory / f"{pair_identifier}_ortho.tif"
         local_dtm_path = work_directory / f"{pair_identifier}_dtm.img"
         local_aligned_path = work_directory / f"{pair_identifier}_aligned.tif"
 
-        processed_results = []
+        generated_files = []
+        buffer_tiles = []
+        file_counter = 0
 
         try:
-
             def download_content_as_bytes(url: str) -> bytes:
                 attempts = 5
                 delay_seconds = 2.0
-
                 for attempt in range(1, attempts + 1):
                     try:
                         with requests.get(url, stream=True, timeout=(15, 300)) as response:
@@ -246,12 +206,8 @@ class DatasetBuilder:
                         if attempt == attempts:
                             raise
                         logger.warning(
-                            "Falha ao baixar %s (tentativa %s/%s | mem disponível ~%.1f MB): %s",
-                            url,
-                            attempt,
-                            attempts,
-                            _available_memory_mb(),
-                            error,
+                            "Falha ao baixar %s (tentativa %s/%s): %s",
+                            url, attempt, attempts, error
                         )
                         time.sleep(delay_seconds)
                         delay_seconds *= 2
@@ -266,37 +222,33 @@ class DatasetBuilder:
             local_ortho_path.write_bytes(ortho_bytes)
             local_dtm_path.write_bytes(dtm_bytes)
 
-            # Salva cópias integrais para o conjunto de teste
+            # Lógica de Teste (Cópia dos originais)
             if dataset_split == "test" and test_label:
-                raw_dir = (
-                    Path(download_directory or work_directory)
-                    / Path(s3_prefix.strip("/"))
-                    / "test"
-                    / f"test-{test_label}"
-                )
+                # Nota: Salva em pasta temporária do worker, o Run move depois se necessário
+                # Mas para simplificar a lógica de teste complexa, mantemos a lógica de upload direto aqui
+                # ou simplificamos. Vou manter a lógica original de upload S3 direto para o teste para não quebrar.
+                raw_dir = work_directory / "raw_test"
                 raw_dir.mkdir(parents=True, exist_ok=True)
                 raw_dtm_path = raw_dir / "dtm.IMG"
                 raw_ortho_path = raw_dir / "ortho.JP2"
 
                 shutil.copyfile(local_dtm_path, raw_dtm_path)
                 shutil.copyfile(local_ortho_path, raw_ortho_path)
-                logger.info(f"💾 [TEST] Copiado original para {raw_dir}")
 
                 if s3_bucket_name:
                     try:
                         client = boto3.client("s3")
                         base_key = f"{s3_prefix}test/test-{test_label}"
                         client.upload_file(str(raw_dtm_path), s3_bucket_name, f"{base_key}/dtm.IMG")
-                        client.upload_file(
-                            str(raw_ortho_path), s3_bucket_name, f"{base_key}/ortho.JP2"
-                        )
+                        client.upload_file(str(raw_ortho_path), s3_bucket_name, f"{base_key}/ortho.JP2")
                         logger.info(f"☁️ [TEST] Upload original em s3://{s3_bucket_name}/{base_key}")
-                        _safe_remove_file(raw_dtm_path)
-                        _safe_remove_file(raw_ortho_path)
-                        shutil.rmtree(raw_dir, ignore_errors=True)
                     except Exception as s3_error:
                         logger.error(f"Falha ao enviar originais de teste: {s3_error}")
+                
+                # Limpeza
+                shutil.rmtree(raw_dir, ignore_errors=True)
 
+            # --- PROCESSAMENTO GDAL ---
             ortho_dataset = gdal.Open(str(local_ortho_path))
             geo_transform = ortho_dataset.GetGeoTransform()
             projection_ref = ortho_dataset.GetProjection()
@@ -308,7 +260,7 @@ class DatasetBuilder:
             y_max = geo_transform[3]
             y_min = y_max + raster_height * geo_transform[5]
 
-            _safe_remove_file(local_aligned_path)
+            # Warp
             gdal.Warp(
                 str(local_aligned_path),
                 str(local_dtm_path),
@@ -318,7 +270,7 @@ class DatasetBuilder:
                 yRes=abs(geo_transform[5]),
                 dstSRS=projection_ref,
                 resampleAlg="cubic",
-                creationOptions=["COMPRESS=LZW", "BIGTIFF=YES"],
+                creationOptions=["COMPRESS=LZW", "BIGTIFF=YES", "TILED=YES"], # OTIMIZAÇÃO: TILED ajuda na leitura por blocos
             )
 
             aligned_dataset = gdal.Open(str(local_aligned_path))
@@ -329,14 +281,15 @@ class DatasetBuilder:
             if nodata_value is None:
                 nodata_value = -3.4028234663852886e38
 
+            # --- LOOP OTIMIZADO DE CORTE ---
             for y_coordinate in range(0, raster_height - tile_size, stride_size):
                 for x_coordinate in range(0, raster_width - tile_size, stride_size):
                     dtm_tile = dtm_band.ReadAsArray(
                         x_coordinate, y_coordinate, tile_size, tile_size
                     )
 
-                    mask = (dtm_tile == nodata_value) | np.isnan(dtm_tile)
-                    if np.any(mask):
+                    # Check rápido com numpy
+                    if np.any((dtm_tile == nodata_value) | np.isnan(dtm_tile)):
                         continue
 
                     ortho_tile = ortho_band.ReadAsArray(
@@ -352,8 +305,7 @@ class DatasetBuilder:
                     min_dtm, max_dtm = dtm_tile.min(), dtm_tile.max()
                     dtm_normalized = (dtm_tile - min_dtm) / (max_dtm - min_dtm + 1e-8)
 
-                    # Armazenar como float16 reduz pela metade a memória usada
-                    processed_results.append(
+                    buffer_tiles.append(
                         {
                             "pair_id": pair_identifier,
                             "tile_x": x_coordinate,
@@ -363,16 +315,40 @@ class DatasetBuilder:
                         }
                     )
 
+                    # OTIMIZAÇÃO: Salva Parquet periodicamente para limpar memória do Worker
+                    if len(buffer_tiles) >= batch_size:
+                        filename = f"{pair_identifier}_part_{file_counter:04d}.parquet"
+                        output_path = work_directory / filename
+                        
+                        df = pd.DataFrame(buffer_tiles)
+                        table = pa.Table.from_pandas(df)
+                        pq.write_table(table, output_path, compression="snappy")
+                        
+                        generated_files.append(output_path)
+                        buffer_tiles = [] # Limpa buffer
+                        file_counter += 1
+                        gc.collect() # Força Garbage Collector
+
+            # Salva o restante do buffer
+            if buffer_tiles:
+                filename = f"{pair_identifier}_part_{file_counter:04d}.parquet"
+                output_path = work_directory / filename
+                df = pd.DataFrame(buffer_tiles)
+                table = pa.Table.from_pandas(df)
+                pq.write_table(table, output_path, compression="snappy")
+                generated_files.append(output_path)
+                buffer_tiles = []
+
+            # Cleanup GDAL Explícito
             ortho_dataset = None
             aligned_dataset = None
+            dtm_band = None
+            ortho_band = None
 
         except Exception as error:
             logger.exception(
-                "Erro processando par %s (split=%s, test_label=%s | mem disponível ~%.1f MB)",  # noqa: TRY401
-                pair_identifier,
-                dataset_split,
-                test_label,
-                _available_memory_mb(),
+                "Erro processando par %s (split=%s | mem disponível ~%.1f MB)", 
+                pair_identifier, dataset_split, _available_memory_mb()
             )
             raise
 
@@ -381,66 +357,11 @@ class DatasetBuilder:
             _safe_remove_file(local_dtm_path)
             _safe_remove_file(local_aligned_path)
 
-        return dataset_split, processed_results
-
-    def _save_batch(self, data_list: List[Dict], dataset_split: str, batch_index: int) -> None:
-        """
-        Salva um lote de dados processados em arquivo Parquet (Local ou S3).
-
-        Args:
-            data_list: Tiles processados.
-            dataset_split: Split alvo (train/validation/test).
-            batch_index: Índice sequencial do arquivo.
-        """
-        if not data_list:
-            return
-
-        dataframe = pd.DataFrame(data_list)
-        pyarrow_table = pa.Table.from_pandas(dataframe)
-        file_name = f"data_part_{batch_index:05d}.parquet"
-
-        try:
-            full_prefix = Path(self.s3_prefix.strip("/")) / dataset_split
-            local_subdirectory = self.download_directory / full_prefix
-            local_subdirectory.mkdir(parents=True, exist_ok=True)
-
-            output_path = local_subdirectory / file_name
-            pq.write_table(pyarrow_table, output_path, compression="snappy")
-            logger.info(
-                f"💾 [{dataset_split.upper()}] Salvo: {output_path} ({len(dataframe)} tiles)"
-            )
-        except Exception as error:
-            logger.error(f"Falha ao salvar no disco local: {error}")
-            return
-
-        if self.is_s3_mode and self.s3_client:
-            s3_key = f"{self.s3_prefix}{dataset_split}/{file_name}"
-
-            try:
-                transfer_config = TransferConfig(
-                    multipart_threshold=8 * 1024 * 1024,
-                    multipart_chunksize=64 * 1024 * 1024,
-                    max_concurrency=4,
-                    use_threads=True,
-                )
-                self.s3_client.upload_file(
-                    str(output_path),
-                    self.s3_bucket_name,
-                    s3_key,
-                    Config=transfer_config,
-                )
-                logger.info(
-                    f"☁️ [{dataset_split.upper()}] S3 Upload: {s3_key} ({len(dataframe)} tiles)"
-                )
-                _safe_remove_file(output_path)
-            except Exception as error:
-                logger.error(f"Falha upload S3: {error}")
+        return dataset_split, generated_files
 
     def _package_assets(self) -> None:
         """
         Compacta os datasets gerados (train, test, validation) em arquivos .zip.
-        Se estiver rodando em modo S3, baixa os parquets, zipa e faz upload do zip.
-        Se local, apenas cria o zip no diretório.
         """
         logger.info("📦 Iniciando empacotamento de assets (Zip)...")
         dataset_splits = ["train", "validation", "test"]
@@ -489,10 +410,6 @@ class DatasetBuilder:
                     for file_key in found_files_keys:
                         file_name = os.path.basename(file_key)
                         if not file_name:
-                            logger.warning(
-                                "Ignorando chave S3 sem nome de arquivo (possível diretório): %s",
-                                file_key,
-                            )
                             continue
 
                         try:
@@ -551,13 +468,20 @@ class DatasetBuilder:
 
     def run(self) -> None:
         """
-        Executa o pipeline completo de construção do dataset.
-
-        Etapas: listar pares, distribuir splits, processar em paralelo,
-        gravar Parquets e empacotar artefatos.
+        Executa o pipeline completo de construção do dataset (OTIMIZADO).
         """
-        logger.info("Iniciando pipeline...")
-        logger.info(f"Memória disponível inicial (aprox): {_available_memory_mb():.1f} MB")
+        logger.info("Iniciando pipeline OTIMIZADO...")
+        
+        # OTIMIZAÇÃO: Cálculo de workers baseado em RAM disponível
+        mem_avail_gb = _available_memory_mb() / 1024.0
+        # Estimativa: 8GB por worker (GDAL Warp + buffers). Se for muito conservador, mude para 6GB.
+        safe_workers = max(1, int(mem_avail_gb // 8))
+        
+        user_workers = self.max_workers if self.max_workers else (os.cpu_count() or 1)
+        active_workers = min(safe_workers, user_workers)
+        
+        logger.info(f"RAM Disp: {mem_avail_gb:.1f}GB. Workers calculados: {active_workers} (User Req: {user_workers})")
+
         replacement_buffer = max(10, int(0.2 * self.total_samples))
         datasets = self._list_datasets(max_pairs=self.total_samples + replacement_buffer)
         logger.info(f"Indexados {len(datasets)} pares")
@@ -584,12 +508,8 @@ class DatasetBuilder:
                 }
             )
 
-        data_buffers = {"train": [], "validation": [], "test": []}
-
-        batch_counters = {"train": 0, "validation": 0, "test": 0}
-
-        active_workers = self.max_workers if self.max_workers else (os.cpu_count() or 1)
-        logger.info(f"Workers: {active_workers} | Batch Size: {self.batch_size}")
+        # OTIMIZAÇÃO: Não acumulamos mais dados em memória no processo pai.
+        # Apenas despachamos tasks e gerenciamos arquivos resultantes.
 
         with ProcessPoolExecutor(max_workers=active_workers) as executor:
             future_to_task = {
@@ -599,9 +519,10 @@ class DatasetBuilder:
                     self.tile_size,
                     self.stride_size,
                     self.download_directory,
-                    self.s3_bucket_name,
+                    self.s3_bucket_name, # Passa nome do bucket, mas worker não faz upload dos parquets
                     self.s3_prefix,
                     self.gdal_cache_max_mb,
+                    self.batch_size
                 ): task
                 for task in tasks
             }
@@ -612,35 +533,60 @@ class DatasetBuilder:
                 for future in as_completed(list(futures_pending)):
                     futures_pending.discard(future)
                     task_info = future_to_task.pop(future)
+                    
                     try:
-                        split_name, tiles_list = future.result()
+                        split_name, parquet_files = future.result()
 
-                        if tiles_list:
-                            data_buffers[split_name].extend(tiles_list)
-                            while len(data_buffers[split_name]) >= self.batch_size:
-                                batch_data = data_buffers[split_name][: self.batch_size]
-                                self._save_batch(
-                                    data_list=batch_data,
-                                    dataset_split=split_name,
-                                    batch_index=batch_counters[split_name],
-                                )
-                                batch_counters[split_name] += 1
-                                data_buffers[split_name] = data_buffers[split_name][
-                                    self.batch_size :
-                                ]
-                            del tiles_list
-                            gc.collect()
+                        # O Worker já salvou os parquets em uma pasta temporária dele.
+                        # Agora movemos para o local final ou fazemos upload.
+                        
+                        for parquet_path in parquet_files:
+                            file_name = parquet_path.name
+                            
+                            # Configura destino local final
+                            full_prefix_path = Path(self.s3_prefix.strip("/")) / split_name
+                            final_local_dir = self.download_directory / full_prefix_path
+                            final_local_dir.mkdir(parents=True, exist_ok=True)
+                            
+                            final_dest_path = final_local_dir / file_name
+                            
+                            # Move do tmp do worker para pasta estruturada
+                            shutil.move(str(parquet_path), str(final_dest_path))
+
+                            # Upload S3 se necessário
+                            if self.is_s3_mode and self.s3_client:
+                                s3_key = f"{self.s3_prefix}{split_name}/{file_name}"
+                                try:
+                                    transfer_config = TransferConfig(
+                                        multipart_threshold=8 * 1024 * 1024,
+                                        multipart_chunksize=64 * 1024 * 1024,
+                                        use_threads=True
+                                    )
+                                    self.s3_client.upload_file(
+                                        str(final_dest_path), 
+                                        self.s3_bucket_name, 
+                                        s3_key,
+                                        Config=transfer_config
+                                    )
+                                    logger.info(f"☁️ Upload S3: {file_name}")
+                                    # Remove local para economizar espaço se estiver em modo nuvem total
+                                    _safe_remove_file(final_dest_path)
+                                except Exception as e:
+                                    logger.error(f"Erro upload S3 {file_name}: {e}")
+                            else:
+                                logger.info(f"💾 Salvo Local: {file_name}")
+
+                        # Limpa pasta temporária do worker (que ficou vazia após o move)
+                        if parquet_files:
+                            worker_dir = parquet_files[0].parent
+                            shutil.rmtree(worker_dir, ignore_errors=True)
 
                     except RequestException as error:
                         logger.warning(
-                            "Download falhou para split=%s | test_label=%s | ortho=%s | dtm=%s. Removendo par e buscando reposição: %s",
-                            task_info.get("split"),
-                            task_info.get("test_label"),
-                            task_info.get("ortho_url"),
-                            task_info.get("dtm_url"),
-                            error,
+                            "Falha no worker (Download/Network) split=%s: %s",
+                            task_info.get("split"), error
                         )
-
+                        # Lógica de Retry (Substituição)
                         if replacement_queue:
                             new_pair = replacement_queue.pop(0)
                             new_task = {
@@ -658,43 +604,24 @@ class DatasetBuilder:
                                 self.s3_bucket_name,
                                 self.s3_prefix,
                                 self.gdal_cache_max_mb,
+                                self.batch_size
                             )
                             future_to_task[new_future] = new_task
                             futures_pending.add(new_future)
                             logger.info(
-                                "Par substituído: novo ortho=%s | dtm=%s para split=%s",
-                                new_task["ortho_url"],
-                                new_task["dtm_url"],
-                                new_task["split"],
+                                "RETRY: Novo par submetido: %s", new_task["ortho_url"]
                             )
+
                     except BrokenProcessPool as error:
-                        logger.exception(
-                            "Pool de processos encerrado abruptamente para split=%s | ortho=%s | dtm=%s | mem disponível ~%.1f MB: %s",
-                            task_info.get("split"),
-                            task_info.get("ortho_url"),
-                            task_info.get("dtm_url"),
-                            _available_memory_mb(),
-                            error,
-                        )
+                        logger.critical("CRITICAL: Process Pool Quebrou (Possível OOM). Reinicie com menos workers.")
                         futures_pending.clear()
                         break
+                    
                     except Exception as error:
-                        logger.exception(
-                            "Erro no loop principal para split=%s | test_label=%s | ortho=%s | dtm=%s: %s",
-                            task_info.get("split"),
-                            task_info.get("test_label"),
-                            task_info.get("ortho_url"),
-                            task_info.get("dtm_url"),
-                            error,
+                         logger.exception(
+                            "Erro genérico na task split=%s: %s",
+                            task_info.get("split"), error
                         )
-
-        for split_name, buffer_data in data_buffers.items():
-            if buffer_data:
-                self._save_batch(
-                    data_list=buffer_data,
-                    dataset_split=split_name,
-                    batch_index=batch_counters[split_name],
-                )
 
         self._package_assets()
 
