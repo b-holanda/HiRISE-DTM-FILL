@@ -188,7 +188,7 @@ class DatasetBuilder:
                 xRes=gt[1], yRes=abs(gt[5]),
                 dstSRS=ds_ortho.GetProjection(),
                 resampleAlg="cubic",
-                creationOptions=["COMPRESS=LZW", "TILED=YES"]
+                creationOptions=["COMPRESS=LZW", "TILED=YES", "BIGTIFF=YES"] 
             )
             
             ds_aligned = gdal.Open(str(local_aligned))
@@ -449,4 +449,3 @@ class DatasetBuilder:
             shutil.rmtree(self.temp_exchange_dir, ignore_errors=True)
             
         logger.info("Pipeline Finalizado com Sucesso!")
-        
