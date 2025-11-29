@@ -84,7 +84,7 @@ class DatasetBuilder:
         download_directory: Optional[Path] = None,
         batch_size: int = 500,
         max_workers: Optional[int] = None,
-        gdal_cache_max_mb: int = 256, # OTIMIZAÇÃO: Valor padrão reduzido para ser conservador
+        gdal_cache_max_mb: int = 256,
     ) -> None:
         self.urls_to_scan = urls_to_scan
         self.total_samples = total_samples
@@ -114,15 +114,19 @@ class DatasetBuilder:
         return indexer.index_pairs(max_pairs=max_pairs or self.total_samples)
 
     def _prepare_assignments(self) -> None:
-        logger.info(f"Preparando {self.total_samples} atribuições...")
-        test_count = int(np.round(0.1 * self.total_samples))
-        validation_count = int(np.round(0.1 * self.total_samples))
-        train_count = self.total_samples - test_count - validation_count
+        """
+        Distribui 80% para treino e 20% para validação.
+        Sem conjunto de Teste.
+        """
+        logger.info(f"Preparando {self.total_samples} atribuições (80% Treino / 20% Validação)...")
+        
+        validation_count = int(np.round(0.2 * self.total_samples))
+        train_count = self.total_samples - validation_count
 
-        self.assignments = (
-            ["train"] * train_count + ["test"] * test_count + ["validation"] * validation_count
-        )
+        self.assignments = ["train"] * train_count + ["validation"] * validation_count
         random.shuffle(self.assignments)
+        
+        logger.info(f"Distribuição final: {train_count} Treino, {validation_count} Validação")
 
     @staticmethod
     def worker_process_pair(
@@ -132,10 +136,9 @@ class DatasetBuilder:
         download_directory: Path,
         gdal_cache_max_mb: int = 256,
         batch_size: int = 500
-    ) -> Tuple[str, List[Path]]: # OTIMIZAÇÃO: Retorna lista de caminhos de arquivo, não os dados
+    ) -> Tuple[str, List[Path]]:
         """
         Processa um par DTM/ORTHO e salva arquivos parquet parciais localmente.
-        Retorna o split e a lista de arquivos gerados.
         """
         digital_terrain_model_url = pair_data["dtm_url"]
         ortho_image_url = pair_data["ortho_url"]
@@ -144,7 +147,7 @@ class DatasetBuilder:
 
         _configure_gdal_cache(gdal_cache_max_mb)
 
-        # OTIMIZAÇÃO: Diretório único por worker/processo para evitar colisão de I/O
+        # Diretório temporário do worker
         worker_id = os.getpid()
         work_directory = Path(download_directory) / f"worker_{worker_id}" / pair_identifier
         work_directory.mkdir(parents=True, exist_ok=True)
@@ -152,6 +155,10 @@ class DatasetBuilder:
         local_ortho_path = work_directory / f"{pair_identifier}_ortho.tif"
         local_dtm_path = work_directory / f"{pair_identifier}_dtm.img"
         local_aligned_path = work_directory / f"{pair_identifier}_aligned.tif"
+
+        # Destino final
+        final_output_dir = Path(download_directory) / dataset_split
+        final_output_dir.mkdir(parents=True, exist_ok=True)
 
         generated_files = []
         buffer_tiles = []
@@ -186,7 +193,6 @@ class DatasetBuilder:
             local_ortho_path.write_bytes(ortho_bytes)
             local_dtm_path.write_bytes(dtm_bytes)
 
-            # --- PROCESSAMENTO GDAL ---
             ortho_dataset = gdal.Open(str(local_ortho_path))
             geo_transform = ortho_dataset.GetGeoTransform()
             projection_ref = ortho_dataset.GetProjection()
@@ -198,7 +204,6 @@ class DatasetBuilder:
             y_max = geo_transform[3]
             y_min = y_max + raster_height * geo_transform[5]
 
-            # Warp
             gdal.Warp(
                 str(local_aligned_path),
                 str(local_dtm_path),
@@ -208,7 +213,7 @@ class DatasetBuilder:
                 yRes=abs(geo_transform[5]),
                 dstSRS=projection_ref,
                 resampleAlg="cubic",
-                creationOptions=["COMPRESS=LZW", "BIGTIFF=YES", "TILED=YES"], # OTIMIZAÇÃO: TILED ajuda na leitura por blocos
+                creationOptions=["COMPRESS=LZW", "BIGTIFF=YES", "TILED=YES"],
             )
 
             aligned_dataset = gdal.Open(str(local_aligned_path))
@@ -219,14 +224,12 @@ class DatasetBuilder:
             if nodata_value is None:
                 nodata_value = -3.4028234663852886e38
 
-            # --- LOOP OTIMIZADO DE CORTE ---
             for y_coordinate in range(0, raster_height - tile_size, stride_size):
                 for x_coordinate in range(0, raster_width - tile_size, stride_size):
                     dtm_tile = dtm_band.ReadAsArray(
                         x_coordinate, y_coordinate, tile_size, tile_size
                     )
 
-                    # Check rápido com numpy
                     if np.any((dtm_tile == nodata_value) | np.isnan(dtm_tile)):
                         continue
 
@@ -253,31 +256,28 @@ class DatasetBuilder:
                         }
                     )
 
-                    # OTIMIZAÇÃO: Salva Parquet periodicamente para limpar memória do Worker
                     if len(buffer_tiles) >= batch_size:
                         filename = f"{pair_identifier}_part_{file_counter:04d}.parquet"
-                        output_path = work_directory / filename
+                        output_path = final_output_dir / filename
                         
                         df = pd.DataFrame(buffer_tiles)
                         table = pa.Table.from_pandas(df)
                         pq.write_table(table, output_path, compression="snappy")
                         
                         generated_files.append(output_path)
-                        buffer_tiles = [] # Limpa buffer
+                        buffer_tiles = []
                         file_counter += 1
-                        gc.collect() # Força Garbage Collector
+                        gc.collect()
 
-            # Salva o restante do buffer
             if buffer_tiles:
                 filename = f"{pair_identifier}_part_{file_counter:04d}.parquet"
-                output_path = work_directory / filename
+                output_path = final_output_dir / filename
                 df = pd.DataFrame(buffer_tiles)
                 table = pa.Table.from_pandas(df)
                 pq.write_table(table, output_path, compression="snappy")
                 generated_files.append(output_path)
                 buffer_tiles = []
 
-            # Cleanup GDAL Explícito
             ortho_dataset = None
             aligned_dataset = None
             dtm_band = None
@@ -294,41 +294,17 @@ class DatasetBuilder:
             _safe_remove_file(local_ortho_path)
             _safe_remove_file(local_dtm_path)
             _safe_remove_file(local_aligned_path)
+            shutil.rmtree(work_directory, ignore_errors=True)
 
         return dataset_split, generated_files
 
-    def _package_assets(self) -> None:
-        """
-        Compacta os datasets gerados (train, test, validation) em arquivos .zip.
-        """
-        logger.info("📦 Iniciando empacotamento de assets (Zip)...")
-        dataset_splits = ["train", "validation", "test"]
-
-        assets_directory = self.download_directory / "assets"
-        assets_directory.mkdir(parents=True, exist_ok=True)
-
-        for split_name in dataset_splits:
-            source_directory = self.download_directory / split_name
-            if not source_directory.exists():
-                continue
-
-            output_zip_path = assets_directory / split_name
-            logger.info(f"   Compactando {split_name} em {output_zip_path}.zip...")
-
-            shutil.make_archive(
-                base_name=str(output_zip_path), format="zip", root_dir=source_directory
-            )
-            logger.info(f"✅ {split_name}.zip criado com sucesso (Local).")
-
     def run(self) -> None:
         """
-        Executa o pipeline completo de construção do dataset (OTIMIZADO).
+        Executa o pipeline completo de construção do dataset.
         """
         logger.info("Iniciando pipeline OTIMIZADO...")
         
-        # OTIMIZAÇÃO: Cálculo de workers baseado em RAM disponível
         mem_avail_gb = _available_memory_mb() / 1024.0
-        # Estimativa: 8GB por worker (GDAL Warp + buffers). Se for muito conservador, mude para 6GB.
         safe_workers = max(1, int(mem_avail_gb // 8))
         
         user_workers = self.max_workers if self.max_workers else (os.cpu_count() or 1)
@@ -356,9 +332,6 @@ class DatasetBuilder:
                 }
             )
 
-        # OTIMIZAÇÃO: Não acumulamos mais dados em memória no processo pai.
-        # Apenas despachamos tasks e gerenciamos arquivos resultantes.
-
         with ProcessPoolExecutor(max_workers=active_workers) as executor:
             future_to_task = {
                 executor.submit(
@@ -383,34 +356,21 @@ class DatasetBuilder:
                     try:
                         split_name, parquet_files = future.result()
 
-                        # O Worker já salvou os parquets em uma pasta temporária dele.
-                        # Agora movemos para o local final ou fazemos upload.
-                        
-                        for parquet_path in parquet_files:
-                            file_name = parquet_path.name
-                            
-                            # Configura destino local final
-                            final_local_dir = self.download_directory / split_name
-                            final_local_dir.mkdir(parents=True, exist_ok=True)
-                            
-                            final_dest_path = final_local_dir / file_name
-                            
-                            # Move do tmp do worker para pasta estruturada
-                            shutil.move(str(parquet_path), str(final_dest_path))
-
-                            logger.info(f"💾 Salvo Local: {file_name}")
-
-                        # Limpa pasta temporária do worker (que ficou vazia após o move)
                         if parquet_files:
-                            worker_dir = parquet_files[0].parent
-                            shutil.rmtree(worker_dir, ignore_errors=True)
+                            logger.info(
+                                "💾 Worker finalizou %s com %d arquivos (ex: %s)",
+                                split_name,
+                                len(parquet_files),
+                                parquet_files[0].name,
+                            )
+                        else:
+                            logger.info("⚠️ Worker finalizou %s sem tiles válidos", split_name)
 
                     except RequestException as error:
                         logger.warning(
                             "Falha no worker (Download/Network) split=%s: %s",
                             task_info.get("split"), error
                         )
-                        # Lógica de Retry (Substituição)
                         if replacement_queue:
                             new_pair = replacement_queue.pop(0)
                             new_task = {
@@ -443,7 +403,5 @@ class DatasetBuilder:
                             "Erro genérico na task split=%s: %s",
                             task_info.get("split"), error
                         )
-
-        self._package_assets()
 
         logger.info("Processamento finalizado!")

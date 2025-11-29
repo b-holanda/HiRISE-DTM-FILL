@@ -86,3 +86,28 @@ def test_worker_process_pair_local(monkeypatch, tmp_path):
     assert split == "train"
     # Tiles should be generated because data has no nodata
     assert len(results) > 0
+    # Parquets devem estar no diretório final do split
+    assert all(path.parent == tmp_path / "train" for path in results)
+    assert all(path.exists() for path in results)
+    # Diretório interno do worker não deve deixar artefatos
+    assert not any(tmp_path.glob("worker_*/*"))
+
+
+def test_prepare_assignments_train_validation(monkeypatch, tmp_path):
+    """
+    Garante distribuição 80/20 entre train/validation e ausência de split de teste.
+    """
+    monkeypatch.setattr("marsfill.dataset.build._configure_gdal_cache", lambda *a, **k: None)
+    builder = DatasetBuilder(
+        urls_to_scan=[],
+        total_samples=10,
+        tile_size=1,
+        stride_size=1,
+        download_directory=tmp_path,
+    )
+
+    builder._prepare_assignments()
+
+    assert builder.assignments.count("train") == 8
+    assert builder.assignments.count("validation") == 2
+    assert "test" not in builder.assignments
