@@ -7,7 +7,7 @@
 \usepackage{caption}
 \usepackage{subcaption}
 \usepackage{float}
-\usepackage{amsmath} % Adicionado para fórmulas matemáticas
+\usepackage{amsmath}
 
 \graphicspath{{assets/}}
 
@@ -22,7 +22,7 @@
 	\email{brunorodriguesholanda@gmail.com}
 }
 
-\begin{document} 
+\begin{document}
 	
 	\maketitle
 	
@@ -30,7 +30,7 @@
 		numero de palavras 150 - 250
 	\end{abstract}
 	
-	\begin{resumo} 
+	\begin{resumo}
 		Numero de palavras: 150 - 250 - igual ao abstract porém em pt-BR
 		Espaço Visual (Páginas): 0.5
 		Foco Principal: Venda o peixe: Problema + Solução (ViT) + Melhor Resultado.
@@ -38,24 +38,24 @@
 	
 	\section{Introdução}
 	
-	A exploração da superfície de Marte atingiu um novo patamar de detalhamento com a câmera \textit{High Resolution Imaging Science Experiment} (HiRISE), a bordo da sonda \textit{Mars Reconnaissance Orbiter} (MRO). Os produtos gerados por este instrumento, especificamente os Modelos Digitais de Terreno (DTMs), oferecem uma resolução espacial na ordem de metros por pixel, constituindo um recurso inestimável para a comunidade científica. Estes dados são fundamentais para estudos geomorfológicos de precisão, modelagem de processos de superfície e, crucialmente, para o planejamento estratégico e segurança de missões robóticas, como o rover Perseverance (MCEWEN et al., 2007).
+	A exploração da superfície de Marte atingiu um novo patamar de detalhamento com a câmera \textit{High Resolution Imaging Science Experiment} (HiRISE), a bordo da sonda \textit{Mars Reconnaissance Orbiter} (MRO). Os produtos gerados por este instrumento, especificamente os Modelos Digitais de Terreno (DTMs), oferecem uma resolução espacial na ordem de metros por pixel, constituindo um recurso inestimável para a comunidade científica. Estes dados são fundamentais para estudos geomorfológicos de precisão, modelagem de processos de superfície e, crucialmente, para o planejamento estratégico e segurança de missões robóticas, como o rover Perseverance \cite{mcewen2007mars}.
 	
-	A metodologia predominante para a geração destes modelos topográficos é a fotogrametria estéreo, que reconstrói a estrutura 3D da superfície através da identificação de pontos homólogos em pares de imagens orbitais (KIRK et al., 2011). Apesar de sua robustez geométrica, esta técnica possui limitações intrínsecas severas. O processo de correspondência de pixels (\textit{stereo matching}) falha sistematicamente em condições adversas, notadamente em regiões de textura homogênea — como vastos campos de dunas — ou em áreas de iluminação extrema, caracterizadas por sombras profundas ou reflexos especulares em gelo. O resultado direto dessas falhas é a presença massiva de lacunas de dados (pixels com valor \textit{NoData}) nos produtos finais.
+	A metodologia predominante para a geração destes modelos topográficos é a fotogrametria estéreo, que reconstrói a estrutura 3D da superfície através da identificação de pontos homólogos em pares de imagens orbitais \cite{kirk2011overview}. Apesar de sua robustez geométrica, esta técnica possui limitações intrínsecas severas. O processo de correspondência de pixels (\textit{stereo matching}) falha sistematicamente em condições adversas, notadamente em regiões de textura homogênea — como vastos campos de dunas — ou em áreas de iluminação extrema, caracterizadas por sombras profundas ou reflexos especulares em gelo. O resultado direto dessas falhas é a presença massiva de lacunas de dados (pixels com valor \textit{NoData}) nos produtos finais.
 	
 	A descontinuidade causada por estas lacunas compromete a integridade dos dados, impedindo análises espaciais contínuas essenciais, como simulações de fluxo hidrológico e cálculos de declividade. Tradicionalmente, a mitigação deste problema recorre a métodos de interpolação matemática, como a bilinear ou \textit{splines}. No entanto, tais abordagens tendem a gerar superfícies artificialmente suaves, ignorando a morfologia local e resultando em artefatos geologicamente implausíveis. A Figura \ref{fig:comparacao_inicial} ilustra este cenário, contrastando a riqueza de textura visual disponível na ortoimagem com a ausência de informação altimétrica no DTM correspondente.
 	
-	\begin{figure}[H] 
+	\begin{figure}[H]
 		\centering
-		\begin{subfigure}[b]{0.35\textwidth}
+		\begin{subfigure}[b]{0.45\textwidth}
 			\centering
-			\includegraphics[width=\textwidth]{intro_imagem_orthoretificada.png}
+			\includegraphics[height=5cm, keepaspectratio]{intro_imagem_orthoretificada.png}
 			\caption{Ortoimagem HiRISE (Textura)}
 			\label{fig:ortho}
 		\end{subfigure}
-		\hspace{1cm}
-		\begin{subfigure}[b]{0.35\textwidth}
+		\hfill
+		\begin{subfigure}[b]{0.45\textwidth}
 			\centering
-			\includegraphics[width=\textwidth]{intro_dtm_HiRISE.png}
+			\includegraphics[height=5cm, keepaspectratio]{intro_dtm_HiRISE.png}
 			\caption{DTM com Lacunas (Preto = NoData)}
 			\label{fig:dtm}
 		\end{subfigure}
@@ -65,7 +65,7 @@
 	
 	Para superar essas limitações, este trabalho propõe uma abordagem baseada em Aprendizado Profundo (\textit{Deep Learning}), especificamente no campo da Estimativa de Profundidade Monocular (MDE). A premissa central é que a ortoimagem monocular (Figura \ref{fig:ortho}), que permanece íntegra mesmo onde a fotogrametria falha, contém pistas visuais suficientes — através de sombreamento (\textit{Shape-from-Shading}) e textura — para inferir a topografia subjacente.
 	
-	Embora trabalhos seminais como o MADNet (TAO et al., 2021) tenham demonstrado a viabilidade do uso de Redes Adversariais Generativas (GANs) baseadas em convoluções (U-Net) para esta tarefa, propõe-se o uso de uma arquitetura mais recente e promissora: os \textit{Vision Transformers} (ViT). Modelos como o DPT (\textit{Dense Prediction Transformer}) (RANFTL et al., 2021) utilizam mecanismos de auto-atenção global, permitindo capturar relações de longo alcance na imagem que são frequentemente perdidas por janelas de convolução limitadas. A hipótese deste estudo é que um modelo ViT-DPT pode aprender a complexa função de transferência entre o albedo marciano e sua topografia de forma mais coesa que as abordagens anteriores.
+	Embora trabalhos seminais como o MADNet \cite{tao2021madnet} tenham demonstrado a viabilidade do uso de Redes Adversariais Generativas (GANs) baseadas em convoluções (U-Net) para esta tarefa, propõe-se o uso de uma arquitetura mais recente e promissora: os \textit{Vision Transformers} (ViT). Modelos como o DPT (\textit{Dense Prediction Transformer}) \cite{ranftl2021vision} utilizam mecanismos de auto-atenção global, permitindo capturar relações de longo alcance na imagem que são frequentemente perdidas por janelas de convolução limitadas. A hipótese deste estudo é que um modelo ViT-DPT pode aprender a complexa função de transferência entre o albedo marciano e sua topografia de forma mais coesa que as abordagens anteriores.
 	
 	Portanto, os objetivos deste trabalho são: (1) consolidar um conjunto de dados curado de pares Ortoimagem-DTM contendo apenas dados válidos para treinamento supervisionado; (2) treinar uma arquitetura ViT-DPT para prever a topografia a partir da informação visual; e (3) aplicar o modelo treinado para preencher seletivamente as lacunas \textit{NoData} em produtos oficiais, gerando DTMs híbridos "prontos para análise". Esta pesquisa visa entregar uma solução automatizada que aumente significativamente a usabilidade científica do vasto arquivo de dados da missão MRO.
 	
@@ -83,9 +83,16 @@
 	
 	\begin{figure}[H]
 		\centering
-		\includegraphics[width=0.6\textwidth]{metodologia_dtm_title_stride.png}
-		\caption{Estratégia de extração.}
+		\includegraphics[width=0.7\textwidth, keepaspectratio]{metodologia_dtm_title_stride.png}
+		\caption{Estratégia de extração e recorte.}
 		\label{fig:tiling_process}
+	\end{figure}
+	
+	\begin{figure}[H]
+		\centering
+		\includegraphics[width=1.0\textwidth, height=0.85\textheight, keepaspectratio]{metodologia_dataset_sequence.png}
+		\caption{Fluxo detalhado de aquisição, limpeza e preparação dos dados (Dataset Pipeline).}
+		\label{fig:seq_dataset}
 	\end{figure}
 	
 	\subsection{Arquitetura de Rede e Treinamento}
@@ -94,8 +101,8 @@
 	
 	\begin{figure}[H]
 		\centering
-		\includegraphics[width=0.6\textwidth]{metodologia_dpt_architecture.jpg}
-		\caption{Arquitetura DPT Adaptado de Ranftl et al. (2021).}
+		\includegraphics[width=0.99\textwidth, keepaspectratio]{metodologia_dpt_architecture.jpg}
+		\caption{Arquitetura DPT. Adaptado de \cite{ranftl2021vision}.}
 		\label{fig:dpt_arch}
 	\end{figure}
 	
@@ -108,6 +115,13 @@
 	\end{equation}
 	
 	Esta função pondera o erro absoluto ($\mathcal{L}_{L1}$), a consistência de bordas e inclinações através de operadores de Sobel ($\mathcal{L}_{grad}$), e a similaridade estrutural perceptual ($\mathcal{L}_{SSIM}$).
+	
+	\begin{figure}[H]
+		\centering
+		\includegraphics[width=1.0\textwidth, height=0.85\textheight, keepaspectratio]{metodologia_train_sequence.png}
+		\caption{Sequência de operações durante uma época de treinamento supervisionado.}
+		\label{fig:seq_train}
+	\end{figure}
 	
 	\subsection{Pipeline de Inferência e Fusão}
 	
@@ -125,17 +139,24 @@
 	\subsubsection{Fusão de Bordas (Blending)}
 	Para eliminar descontinuidades na junção entre o pixel real e o sintético, aplicou-se um algoritmo de fusão. Uma máscara das lacunas foi dilatada e suavizada por filtro Gaussiano ($\sigma=2.0$), criando uma zona de transição gradual (\textit{feathering}) que interpolou os valores, garantindo continuidade topográfica.
 	
+	\begin{figure}[H]
+		\centering
+		\includegraphics[width=1.0\textwidth, height=0.85\textheight, keepaspectratio]{metodologia_fill_sequence.png}
+		\caption{Pipeline de inferência: da imagem bruta à fusão topográfica.}
+		\label{fig:seq_fill}
+	\end{figure}
+	
 	\subsection{Protocolo de Validação}
 	
 	Devido à inexistência de dados reais nas áreas de lacuna, a validação utilizou o método de "Lacunas Sintéticas". Máscaras de falha artificiais foram introduzidas em DTMs de teste originalmente perfeitos. As métricas RMSE (Erro Quadrático Médio), MAE (Erro Absoluto Médio) e SSIM foram calculadas comparando-se a reconstrução da IA com o dado original oculto.
 	
 	\section{Resultados}
 	
-	Numero de palavras: 400 - 600 
+	Numero de palavras: 400 - 600
 	Espaço Visual (Páginas): 1.5 a 2.0
 	Foco Principal: Crucial: Menos texto, mais tabelas de métricas e figuras comparativas.
 	
-	\section{Análise e Discução}
+	\section{Análise e Discussão}
 	
 	Numero de palavras: 700 - 900
 	Espaço Visual (Páginas): 1.5 a 2.0
@@ -146,5 +167,8 @@
 	Numero de palavras: 200 - 300
 	Espaço Visual (Páginas): 0.5
 	Foco Principal: Crucial: Retomada dos objetivos, limitações e trabalhos futuros.
+	
+	\bibliographystyle{libs/template-latex/sbc}
+	\bibliography{references}
 	
 \end{document}
