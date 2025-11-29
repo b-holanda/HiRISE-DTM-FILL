@@ -1,12 +1,16 @@
+import multiprocessing
 import numpy as np
 
 from marsfill.dataset.build import DatasetBuilder
 
 
-def test_worker_process_pair_local(monkeypatch, tmp_path):
-    # Fake requests.get returning minimal image bytes
+def test_producer_consumer_flow(monkeypatch, tmp_path):
+    """
+    Produtor deve gerar tiles e o consumidor consolidar em parquet no split correto.
+    """
+
     class FakeResp:
-        def __init__(self, content):
+        def __init__(self, content: bytes):
             self.content = content
 
         def raise_for_status(self):
@@ -23,9 +27,9 @@ def test_worker_process_pair_local(monkeypatch, tmp_path):
 
     monkeypatch.setattr("marsfill.dataset.build.requests.get", fake_get)
 
-    # Fake GDAL objects
+    # Fake GDAL + write helper
     class FakeBand:
-        def __init__(self, data, nodata=None):
+        def __init__(self, data, nodata=-9999):
             self.data = data
             self.nodata = nodata
 
@@ -51,46 +55,58 @@ def test_worker_process_pair_local(monkeypatch, tmp_path):
             return FakeBand(self.data, nodata=-9999)
 
     class FakeGdalModule:
-        GA_Update = 1
-
-        @staticmethod
-        def FileFromMemBuffer(path, content):
-            return None
-
         @staticmethod
         def Open(path, mode=None):
-            data = np.ones((8, 8), dtype=np.float32)
+            data = np.ones((4, 4), dtype=np.float32)
             return FakeDataset(data)
 
         @staticmethod
         def Warp(*args, **kwargs):
             return None
 
-        @staticmethod
-        def Unlink(path):
-            return None
-
     monkeypatch.setattr("marsfill.dataset.build.gdal", FakeGdalModule)
-
-    pair = {
-        "dtm_url": "http://example.com/dtm.IMG",
-        "ortho_url": "http://example.com/ortho.JP2",
-        "split": "train",
-    }
-    split, results = DatasetBuilder.worker_process_pair(
-        pair_data=pair,
-        tile_size=4,
-        stride_size=4,
-        download_directory=tmp_path,
+    # Simplifica escrita de TIF em teste
+    monkeypatch.setattr(
+        "marsfill.dataset.build._save_tile_as_tif",
+        lambda arr, path: path.write_bytes(arr.tobytes()),
     )
-    assert split == "train"
-    # Tiles should be generated because data has no nodata
-    assert len(results) > 0
-    # Parquets devem estar no diretório final do split
-    assert all(path.parent == tmp_path / "train" for path in results)
-    assert all(path.exists() for path in results)
-    # Diretório interno do worker não deve deixar artefatos
-    assert not any(tmp_path.glob("worker_*/*"))
+
+    pair = {"dtm_url": "http://example.com/dtm.IMG", "ortho_url": "http://example.com/ortho.JP2", "split": "train"}
+
+    temp_exchange = tmp_path / "exchange"
+    temp_exchange.mkdir(parents=True, exist_ok=True)
+
+    with multiprocessing.Manager() as manager:
+        queue = manager.Queue()
+
+        # Produtor gera tiles e coloca metadados na fila
+        DatasetBuilder.worker_producer(
+            pair_data=pair,
+            tile_size=2,
+            stride_size=2,
+            download_directory=tmp_path,
+            temp_exchange_dir=temp_exchange,
+            queue=queue,
+            gdal_cache_max_mb=64,
+        )
+
+        # Poison pill para encerrar consumidor
+        queue.put(None)
+
+        # Consumidor lê fila e grava parquet
+        DatasetBuilder.worker_consumer(
+            queue=queue,
+            download_directory=tmp_path,
+            batch_size=1,
+            consumer_id=0,
+        )
+
+    # Verifica parquet no split correto
+    parquets = list((tmp_path / "train").glob("*.parquet"))
+    assert parquets, "Nenhum parquet gerado pelo consumidor"
+
+    # Não deve sobrar arquivos temporários de tiles
+    assert not any(temp_exchange.rglob("*.tif"))
 
 
 def test_prepare_assignments_train_validation(monkeypatch, tmp_path):
