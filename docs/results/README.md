@@ -32,3 +32,7 @@ Este documento sumariza os principais resultados obtidos a partir do pipeline de
 - O ETL está funcional e produz tiles consistentes; alinhamento e tiling demonstrados pelas figuras.
 - O modelo (DPT-ViT) está integrado e treinável; o fluxo de inferência salva métricas e visualizações automaticamente.
 - Próximos passos sugeridos: aumentar cobertura de testes para trechos de treinamento/inferência, registrar métricas quantitativas de fill em múltiplos pares de teste e adicionar comparativos com métodos base (ex.: interpolação clássica).
+
+## Build dataset result
+
+tempo de execução: 16 horas e 34 minutos
