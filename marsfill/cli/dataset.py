@@ -13,16 +13,14 @@ logger = Logger()
 class DatasetCLI:
     """Interface de Linha de Comando (CLI) para orquestrar a construção do dataset Marsfill."""
 
-    def run(self, profile_name: str, execution_mode: str) -> None:
+    def run(self, profile_name: str) -> None:
         """
         Executa o pipeline de construção do dataset a partir de um perfil.
 
         Args:
             profile_name: Nome do perfil de configuração (ex.: `prod`, `dev`).
-            execution_mode: Destino dos dados, `local` ou `s3`.
 
         Raises:
-            ValueError: Quando o modo S3 é selecionado sem bucket definido.
             Exception: Para qualquer falha no pipeline.
         """
         configuration_profile = get_profile(profile_name)
@@ -42,27 +40,11 @@ class DatasetCLI:
         batch_size: int = build_config.get("batch_size", 500)
         max_workers: Optional[int] = build_config.get("max_workers", None)
 
-        download_directory: Optional[Path] = None
-        s3_bucket_name: Optional[str] = None
-        s3_prefix: str = build_config.get("s3_prefix", "dataset/v1/")
+        output_directory_name = build_config.get("output", "data/dataset/v1/")
+        project_root_path = Path(__file__).resolve().parent.parent.parent
+        download_directory = project_root_path / output_directory_name
 
-        if execution_mode == "local":
-            output_directory_name = build_config.get("output", "dataset/v1/")
-            project_root_path = Path(__file__).resolve().parent.parent.parent
-            download_directory = project_root_path / output_directory_name
-
-            logger.info(f"🔧 Modo: LOCAL. Salvando em: {download_directory}")
-
-        elif execution_mode == "s3":
-            s3_bucket_name = build_config.get("s3_bucket")
-
-            if not s3_bucket_name:
-                logger.error(
-                    "Erro: Modo S3 selecionado, mas 's3_bucket' não está definido no profile."
-                )
-                raise ValueError("Configuração 's3_bucket' ausente para modo S3.")
-
-            logger.info(f"🔧 Modo: S3. Bucket: {s3_bucket_name} | Prefix: {s3_prefix}")
+        logger.info(f"🔧 Modo: LOCAL. Salvando em: {download_directory}")
 
         logger.info("--- Parâmetros do Dataset ---")
         logger.info(f"Samples: {total_samples}")
@@ -78,8 +60,6 @@ class DatasetCLI:
                 tile_size=tile_size,
                 stride_size=stride_size,
                 download_directory=download_directory,
-                s3_bucket_name=s3_bucket_name,
-                s3_prefix=s3_prefix,
                 batch_size=batch_size,
                 max_workers=max_workers,
             )
@@ -101,18 +81,10 @@ def main():
         help="Nome do perfil de configuração (ex: prod, test)",
     )
 
-    parser.add_argument(
-        "--mode",
-        type=str,
-        choices=["local", "s3"],
-        required=True,
-        help="Define onde os dados serão salvos: no disco local ou upload direto pro S3.",
-    )
-
     args = parser.parse_args()
 
     cli_interface = DatasetCLI()
-    cli_interface.run(profile_name=args.profile, execution_mode=args.mode)
+    cli_interface.run(profile_name=args.profile)
 
 
 if __name__ == "__main__":

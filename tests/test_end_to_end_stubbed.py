@@ -25,7 +25,7 @@ def test_end_to_end_stubbed(monkeypatch, tmp_path):
         lambda name: {"make": {"output": str(tmp_path / "dataset/v1/")}},
     )
     monkeypatch.setattr(dataset_cli, "logger", types.SimpleNamespace(info=lambda *a, **k: None))
-    monkeypatch.setattr(sys, "argv", ["prog", "--profile", "prod", "--mode", "local"])
+    monkeypatch.setattr(sys, "argv", ["prog", "--profile", "prod"])
     dataset_cli.main()
 
     # Train

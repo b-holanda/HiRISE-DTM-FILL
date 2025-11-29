@@ -1,23 +1,21 @@
-import os
-import requests
-from requests.exceptions import RequestException
-import random
-import boto3
-from boto3.s3.transfer import TransferConfig
-import pandas as pd
-import pyarrow as pa
-import pyarrow.parquet as pq
-from pathlib import Path
-import numpy as np
 import gc
-from osgeo import gdal
-from concurrent.futures import ProcessPoolExecutor, as_completed
-from concurrent.futures.process import BrokenProcessPool
-from typing import Optional, Tuple, List, Dict, Any
-import zipfile
+import os
+import random
 import shutil
 import tempfile
 import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures.process import BrokenProcessPool
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+import numpy as np
+import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
+import requests
+from osgeo import gdal
+from requests.exceptions import RequestException
 
 try:
     import psutil  # type: ignore
@@ -84,11 +82,8 @@ class DatasetBuilder:
         tile_size: int,
         stride_size: int,
         download_directory: Optional[Path] = None,
-        s3_bucket_name: Optional[str] = None,
-        s3_prefix: str = "dataset/v1/",
         batch_size: int = 500,
         max_workers: Optional[int] = None,
-        s3_client: Optional[Any] = None,
         gdal_cache_max_mb: int = 256, # OTIMIZAÇÃO: Valor padrão reduzido para ser conservador
     ) -> None:
         self.urls_to_scan = urls_to_scan
@@ -97,8 +92,6 @@ class DatasetBuilder:
         self.stride_size = stride_size
 
         self.download_directory = download_directory
-        self.s3_bucket_name = s3_bucket_name
-        self.s3_prefix = s3_prefix if s3_prefix.endswith("/") else f"{s3_prefix}/"
         self.batch_size = batch_size
         self.max_workers = max_workers
         self.assignments = []
@@ -107,29 +100,14 @@ class DatasetBuilder:
         if download_directory:
             self.download_directory = Path(download_directory)
             self.download_directory.mkdir(parents=True, exist_ok=True)
-            self._temporary_download_dir = False
         else:
             self.download_directory = Path(tempfile.mkdtemp(prefix="marsfill_dataset_"))
-            self._temporary_download_dir = True
 
         _configure_gdal_cache(self.gdal_cache_max_mb)
 
-        self.is_s3_mode = bool(s3_bucket_name)
-
-        if s3_client and not s3_bucket_name:
-            raise ValueError("Para salvar no S3, forneça o 's3_bucket_name'.")
-
-        if s3_bucket_name:
-            self.s3_client = s3_client if s3_client else boto3.client("s3")
-            logger.info(
-                f"Modo Cloud: Bucket='{self.s3_bucket_name}', Prefix='{self.s3_prefix}', "
-                f"cache GDAL={self.gdal_cache_max_mb}MB, workspace='{self.download_directory}'"
-            )
-        else:
-            self.s3_client = None
-            logger.info(
-                f"Modo Local: '{self.download_directory}' | cache GDAL={self.gdal_cache_max_mb}MB"
-            )
+        logger.info(
+            f"Modo Local: '{self.download_directory}' | cache GDAL={self.gdal_cache_max_mb}MB"
+        )
 
     def _list_datasets(self, max_pairs: Optional[int] = None) -> List[ProductPair]:
         indexer = HirisePDSIndexerDFS(self.urls_to_scan)
@@ -147,24 +125,11 @@ class DatasetBuilder:
         random.shuffle(self.assignments)
 
     @staticmethod
-    def _index_to_label(index: int) -> str:
-        letters = []
-        while True:
-            index, remainder = divmod(index, 26)
-            letters.append(chr(ord("a") + remainder))
-            if index == 0:
-                break
-            index -= 1
-        return "".join(reversed(letters))
-
-    @staticmethod
     def worker_process_pair(
-        pair_data: Dict[str, Any],
+        pair_data: Dict[str, object],
         tile_size: int,
         stride_size: int,
         download_directory: Path,
-        s3_bucket_name: Optional[str],
-        s3_prefix: str,
         gdal_cache_max_mb: int = 256,
         batch_size: int = 500
     ) -> Tuple[str, List[Path]]: # OTIMIZAÇÃO: Retorna lista de caminhos de arquivo, não os dados
@@ -175,7 +140,6 @@ class DatasetBuilder:
         digital_terrain_model_url = pair_data["dtm_url"]
         ortho_image_url = pair_data["ortho_url"]
         dataset_split = pair_data["split"]
-        test_label = pair_data.get("test_label")
         pair_identifier = os.path.basename(ortho_image_url).replace(".JP2", "")
 
         _configure_gdal_cache(gdal_cache_max_mb)
@@ -221,32 +185,6 @@ class DatasetBuilder:
 
             local_ortho_path.write_bytes(ortho_bytes)
             local_dtm_path.write_bytes(dtm_bytes)
-
-            # Lógica de Teste (Cópia dos originais)
-            if dataset_split == "test" and test_label:
-                # Nota: Salva em pasta temporária do worker, o Run move depois se necessário
-                # Mas para simplificar a lógica de teste complexa, mantemos a lógica de upload direto aqui
-                # ou simplificamos. Vou manter a lógica original de upload S3 direto para o teste para não quebrar.
-                raw_dir = work_directory / "raw_test"
-                raw_dir.mkdir(parents=True, exist_ok=True)
-                raw_dtm_path = raw_dir / "dtm.IMG"
-                raw_ortho_path = raw_dir / "ortho.JP2"
-
-                shutil.copyfile(local_dtm_path, raw_dtm_path)
-                shutil.copyfile(local_ortho_path, raw_ortho_path)
-
-                if s3_bucket_name:
-                    try:
-                        client = boto3.client("s3")
-                        base_key = f"{s3_prefix}test/test-{test_label}"
-                        client.upload_file(str(raw_dtm_path), s3_bucket_name, f"{base_key}/dtm.IMG")
-                        client.upload_file(str(raw_ortho_path), s3_bucket_name, f"{base_key}/ortho.JP2")
-                        logger.info(f"☁️ [TEST] Upload original em s3://{s3_bucket_name}/{base_key}")
-                    except Exception as s3_error:
-                        logger.error(f"Falha ao enviar originais de teste: {s3_error}")
-                
-                # Limpeza
-                shutil.rmtree(raw_dir, ignore_errors=True)
 
             # --- PROCESSAMENTO GDAL ---
             ortho_dataset = gdal.Open(str(local_ortho_path))
@@ -366,105 +304,21 @@ class DatasetBuilder:
         logger.info("📦 Iniciando empacotamento de assets (Zip)...")
         dataset_splits = ["train", "validation", "test"]
 
-        if not self.is_s3_mode or not self.s3_client:
-            assets_directory = self.download_directory / self.s3_prefix.strip("/") / "assets"
-            assets_directory.mkdir(parents=True, exist_ok=True)
+        assets_directory = self.download_directory / "assets"
+        assets_directory.mkdir(parents=True, exist_ok=True)
 
-            for split_name in dataset_splits:
-                source_directory = self.download_directory / self.s3_prefix.strip("/") / split_name
-                if not source_directory.exists():
-                    continue
+        for split_name in dataset_splits:
+            source_directory = self.download_directory / split_name
+            if not source_directory.exists():
+                continue
 
-                output_zip_path = assets_directory / split_name
-                logger.info(f"   Compactando {split_name} em {output_zip_path}.zip...")
+            output_zip_path = assets_directory / split_name
+            logger.info(f"   Compactando {split_name} em {output_zip_path}.zip...")
 
-                shutil.make_archive(
-                    base_name=str(output_zip_path), format="zip", root_dir=source_directory
-                )
-                logger.info(f"✅ {split_name}.zip criado com sucesso (Local).")
-
-            return
-
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            temporary_path = Path(temporary_directory)
-
-            for split_name in dataset_splits:
-                s3_source_prefix = f"{self.s3_prefix}{split_name}/"
-                logger.info(f"   Processando {split_name} no S3...")
-
-                paginator = self.s3_client.get_paginator("list_objects_v2")
-                pages = paginator.paginate(Bucket=self.s3_bucket_name, Prefix=s3_source_prefix)
-
-                found_files_keys = []
-                for page in pages:
-                    for obj in page.get("Contents", []):
-                        found_files_keys.append(obj["Key"])
-
-                if not found_files_keys:
-                    logger.info(f"   Nenhum arquivo encontrado para {split_name}, pulando.")
-                    continue
-
-                local_zip_path = temporary_path / f"{split_name}.zip"
-
-                with zipfile.ZipFile(local_zip_path, "w", zipfile.ZIP_STORED) as zip_file_handle:
-                    for file_key in found_files_keys:
-                        file_name = os.path.basename(file_key)
-                        if not file_name:
-                            continue
-
-                        try:
-                            s3_object = self.s3_client.get_object(
-                                Bucket=self.s3_bucket_name, Key=file_key
-                            )
-                            file_content = s3_object["Body"].read()
-                            zip_file_handle.writestr(file_name, file_content)
-                        except Exception as error:
-                            logger.error(f"Erro ao baixar {file_key} para zip: {error}")
-
-                s3_destination_key = f"{self.s3_prefix}assets/{split_name}.zip"
-                file_size_mb = os.path.getsize(local_zip_path) / 1e6
-                logger.info(f"   Enviando {split_name}.zip para o S3 ({file_size_mb:.2f} MB)...")
-
-                try:
-                    with open(local_zip_path, "rb") as file_pointer:
-                        transfer_config = TransferConfig(
-                            multipart_threshold=8 * 1024 * 1024,
-                            multipart_chunksize=64 * 1024 * 1024,
-                            max_concurrency=4,
-                            use_threads=True,
-                        )
-                        self.s3_client.upload_fileobj(
-                            file_pointer,
-                            self.s3_bucket_name,
-                            s3_destination_key,
-                            Config=transfer_config,
-                        )
-                    logger.info(
-                        f"✅ Upload concluído: s3://{self.s3_bucket_name}/{s3_destination_key}"
-                    )
-                except Exception as error:
-                    logger.error(f"Erro no upload do zip: {error}")
-
-        self._cleanup_local_artifacts()
-
-    def _cleanup_local_artifacts(self) -> None:
-        """Remove artefatos locais já enviados para o S3."""
-        if not self.download_directory:
-            return
-
-        target_root = self.download_directory / self.s3_prefix.strip("/")
-        if target_root.exists():
-            try:
-                shutil.rmtree(target_root, ignore_errors=True)
-                logger.info(f"🧹 Artefatos locais removidos: {target_root}")
-            except Exception as error:
-                logger.warning(f"Não foi possível limpar artefatos locais em {target_root}: {error}")
-
-        if getattr(self, "_temporary_download_dir", False):
-            try:
-                shutil.rmtree(self.download_directory, ignore_errors=True)
-            except Exception as error:
-                logger.debug(f"Falha ao remover diretório temporário {self.download_directory}: {error}")
+            shutil.make_archive(
+                base_name=str(output_zip_path), format="zip", root_dir=source_directory
+            )
+            logger.info(f"✅ {split_name}.zip criado com sucesso (Local).")
 
     def run(self) -> None:
         """
@@ -492,19 +346,13 @@ class DatasetBuilder:
         replacement_queue = datasets[self.total_samples :]
 
         tasks = []
-        test_counter = 0
         for pair in primary_datasets:
             destination_split = self.assignments.pop() if self.assignments else "train"
-            test_label = None
-            if destination_split == "test":
-                test_label = self._index_to_label(test_counter)
-                test_counter += 1
             tasks.append(
                 {
                     "dtm_url": pair.dtm_url,
                     "ortho_url": pair.ortho_url,
                     "split": destination_split,
-                    "test_label": test_label,
                 }
             )
 
@@ -519,8 +367,6 @@ class DatasetBuilder:
                     self.tile_size,
                     self.stride_size,
                     self.download_directory,
-                    self.s3_bucket_name, # Passa nome do bucket, mas worker não faz upload dos parquets
-                    self.s3_prefix,
                     self.gdal_cache_max_mb,
                     self.batch_size
                 ): task
@@ -544,8 +390,7 @@ class DatasetBuilder:
                             file_name = parquet_path.name
                             
                             # Configura destino local final
-                            full_prefix_path = Path(self.s3_prefix.strip("/")) / split_name
-                            final_local_dir = self.download_directory / full_prefix_path
+                            final_local_dir = self.download_directory / split_name
                             final_local_dir.mkdir(parents=True, exist_ok=True)
                             
                             final_dest_path = final_local_dir / file_name
@@ -553,28 +398,7 @@ class DatasetBuilder:
                             # Move do tmp do worker para pasta estruturada
                             shutil.move(str(parquet_path), str(final_dest_path))
 
-                            # Upload S3 se necessário
-                            if self.is_s3_mode and self.s3_client:
-                                s3_key = f"{self.s3_prefix}{split_name}/{file_name}"
-                                try:
-                                    transfer_config = TransferConfig(
-                                        multipart_threshold=8 * 1024 * 1024,
-                                        multipart_chunksize=64 * 1024 * 1024,
-                                        use_threads=True
-                                    )
-                                    self.s3_client.upload_file(
-                                        str(final_dest_path), 
-                                        self.s3_bucket_name, 
-                                        s3_key,
-                                        Config=transfer_config
-                                    )
-                                    logger.info(f"☁️ Upload S3: {file_name}")
-                                    # Remove local para economizar espaço se estiver em modo nuvem total
-                                    _safe_remove_file(final_dest_path)
-                                except Exception as e:
-                                    logger.error(f"Erro upload S3 {file_name}: {e}")
-                            else:
-                                logger.info(f"💾 Salvo Local: {file_name}")
+                            logger.info(f"💾 Salvo Local: {file_name}")
 
                         # Limpa pasta temporária do worker (que ficou vazia após o move)
                         if parquet_files:
@@ -593,7 +417,6 @@ class DatasetBuilder:
                                 "dtm_url": new_pair.dtm_url,
                                 "ortho_url": new_pair.ortho_url,
                                 "split": task_info.get("split"),
-                                "test_label": task_info.get("test_label"),
                             }
                             new_future = executor.submit(
                                 self.worker_process_pair,
@@ -601,8 +424,6 @@ class DatasetBuilder:
                                 self.tile_size,
                                 self.stride_size,
                                 self.download_directory,
-                                self.s3_bucket_name,
-                                self.s3_prefix,
                                 self.gdal_cache_max_mb,
                                 self.batch_size
                             )

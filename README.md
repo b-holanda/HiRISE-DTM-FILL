@@ -71,7 +71,7 @@ conda activate marsfill-env
 
 ## Uso
 
-Todo o pipeline funciona em dois modos: **s3** (dados lidos/escritos direto no bucket) ou **local** (dados em `./data` na raiz do projeto). Os comandos abaixo assumem o perfil `prod`; use `--profile test` para o perfil de teste.
+A geração do dataset agora roda apenas em modo local (grava na pasta configurada no profile, padrão `./data/dataset/v1`). As etapas de treino e preenchimento continuam aceitando `--mode local` ou `--mode s3`. Os comandos abaixo assumem o perfil `prod`; use `--profile test` para o perfil de teste.
 
 ### Testes
 
@@ -103,16 +103,16 @@ Requisitos recomendados:
 - **Espaço em disco**: 2 TB
 
 ```bash
-# S3
-./dataset.sh --profile prod --mode s3
-# Local
-./dataset.sh --profile prod --mode local
+./dataset.sh --profile prod
 ```
 
-Saídas esperadas:
-- Treino: `s3://hirise-dtm-fill/dataset/v1/train` ou `./data/dataset/v1/train`
-- Validação: `s3://hirise-dtm-fill/dataset/v1/validation` ou `./data/dataset/v1/validation`
-- Teste (arquivos integrais): `s3://hirise-dtm-fill/dataset/v1/test/test-a/{dtm.IMG, ortho.JP2}`, `test-b`, ... ou `./data/dataset/v1/test/...`
+Saídas esperadas (local):
+- Treino: `./data/dataset/v1/train`
+- Validação: `./data/dataset/v1/validation`
+- Teste (arquivos integrais): `./data/dataset/v1/test/test-a/{dtm.IMG, ortho.JP2}`, `test-b`, ...
+- Assets compactados: `./data/dataset/v1/assets/{train,validation,test}.zip`
+
+> Caso precise usar os dados em um bucket, faça o upload manual do diretório gerado ou dos arquivos `.zip` em `assets/`.
 
 ### 2) Treinar o modelo
 
@@ -129,6 +129,8 @@ Requisitos recomendados (Intel/DPT-ViT-Large):
 # Local
 ./train.sh --profile prod --mode local
 ```
+
+Para usar o modo `s3`, garanta que o dataset já foi enviado ao bucket (a etapa de criação salva apenas localmente).
 
 Entradas: `dataset/v1/train` e `dataset/v1/validation` no bucket ou em `./data`.  
 Saída: `s3://hirise-dtm-fill/models/marsfill_model.pth` ou `./data/models/marsfill_model.pth`.

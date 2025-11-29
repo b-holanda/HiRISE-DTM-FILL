@@ -6,8 +6,6 @@ make:
   output: "data/dataset/v1/"
   tile_size: 512
   stride: 256
-  s3_bucket: "hirise-dtm-fill" 
-  s3_prefix: "dataset/v1/"
   batch_size: 500
   max_workers: null
 

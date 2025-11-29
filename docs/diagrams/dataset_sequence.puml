@@ -1,5 +1,5 @@
 @startuml DatasetPipeline
-title Sequência: ./dataset.sh (local ou s3)
+title Sequência: ./dataset.sh (somente local)
 
 actor Usuário
 participant "dataset.sh" as Shell
@@ -8,23 +8,22 @@ participant "get_profile" as Profile
 participant "DatasetBuilder" as Builder
 participant "HirisePDSIndexerDFS" as Indexer
 participant "Workers (ProcessPool)" as Workers
-participant "Storage\n(Local FS ou S3)" as Storage
+participant "Storage\n(Disco local)" as Storage
 
-Usuário -> Shell: ./dataset.sh --profile <p> --mode <local|s3>
+Usuário -> Shell: ./dataset.sh --profile <p>
 Shell -> CLI: python marsfill/cli/dataset.py args
 CLI -> Profile: carregar perfil <p>
-Profile --> CLI: config make (urls, bucket, paths)
+Profile --> CLI: config make (urls, paths)
 CLI -> Builder: instanciar DatasetBuilder(config)
 Builder -> Indexer: index_pairs(max_pairs=samples)
 Indexer --> Builder: pares DTM/ORTHO
 Builder -> Builder: definir splits (train/val/test)
 loop Para cada par
-  Builder -> Workers: worker_process_pair(par,\n tile_size, stride_size,\n download_dir, bucket, prefix)
+  Builder -> Workers: worker_process_pair(par,\n tile_size, stride_size,\n download_dir)
   Workers -> Workers: download DTM/ORTHO\n+ alinhamento GDAL\n+ tiles válidos (sem NoData)
-  Workers --> Builder: lista de tiles + (opcional) originais de teste
+  Workers --> Builder: lista de tiles gerados
 end
 Builder -> Storage: salvar parquets (train/val/test)
-Builder -> Storage: salvar originais de teste\n(test-a, test-b, ...)
 Builder -> Storage: zipar assets (train/val/test)
 Builder --> CLI: ok
 CLI --> Shell: status

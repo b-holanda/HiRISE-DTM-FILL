@@ -8,11 +8,11 @@
 #   das imagens HiRISE.
 #
 # Uso:
-#   ./make_dataset.sh --profile <nome_perfil> --mode <local|s3>
+#   ./make_dataset.sh --profile <nome_perfil>
 #
 # Exemplos:
-#   ./make_dataset.sh --profile dev --mode local   (Teste rápido local)
-#   ./make_dataset.sh --profile prod --mode s3     (Produção com upload para nuvem)
+#   ./make_dataset.sh --profile dev   (Teste rápido local)
+#   ./make_dataset.sh --profile prod  (Produção local)
 # =================================================================================================
 
 # 1. Configuração do Diretório Raiz

@@ -82,8 +82,6 @@ def test_worker_process_pair_local(monkeypatch, tmp_path):
         tile_size=4,
         stride_size=4,
         download_directory=tmp_path,
-        s3_bucket_name=None,
-        s3_prefix="dataset/v1/",
     )
     assert split == "train"
     # Tiles should be generated because data has no nodata
