@@ -6,6 +6,9 @@ from marsfill.model.eval import Evaluator
 from marsfill.model.train import AvailableModels
 from marsfill.utils import Logger
 from marsfill.fill.filler_stats import FillerStats
+from osgeo import gdal
+
+gdal.UseExceptions()
 
 logger = Logger()
 

@@ -4,6 +4,9 @@ from pathlib import Path
 from marsfill.utils.profiler import get_profile
 from marsfill.fill.hole_gen import apply_holes_to_raster
 from marsfill.utils import Logger
+from osgeo import gdal
+
+gdal.UseExceptions()
 
 logger = Logger()
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent

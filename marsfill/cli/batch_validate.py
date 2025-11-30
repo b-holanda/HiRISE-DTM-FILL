@@ -12,12 +12,15 @@ from marsfill.fill.dtm_filler import DTMFiller
 from marsfill.model.eval import Evaluator
 from marsfill.model.train import AvailableModels
 from marsfill.utils import Logger
+from osgeo import gdal
 
 from marsfill.fill.filler_stats import FillerStats
 
 from tabulate import tabulate
 
 logger = Logger()
+
+gdal.UseExceptions()
 
 def find_dataset_pairs(root_dir):
     """Encontra os pares de arquivos (Input, Ortho, GT)."""
