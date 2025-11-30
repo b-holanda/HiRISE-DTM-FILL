@@ -2,7 +2,7 @@ make:
   urls_to_scan:
     - "https://www.uahirise.org/PDS/DTM/PSP/"
     - "https://www.uahirise.org/PDS/DTM/ESP/"
-  samples: 1 
+  samples: 10
   output: "data/dataset/v1/"
   tile_size: 512
   stride: 256
