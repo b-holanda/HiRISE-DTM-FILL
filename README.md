@@ -151,6 +151,19 @@ Saídas:
 - Métricas: `.../metrics.json`
 - Gráficos: `.../result_*.jpg`
 
+### Utilitário: Gerar Buracos (NoData) sintéticos
+
+Crie variações de DTMs com lacunas para testes/controlados:
+
+```bash
+python -m marsfill.fill.hole_gen \
+  --input data/dataset/v1/test/test-a/dtm.IMG \
+  --output data/dataset/v1/test/test-a/dtm_holes.tif \
+  --holes 5 --min-radius 8 --max-radius 16 --seed 42
+```
+
+O script insere buracos circulares de NoData aleatórios e salva um novo GeoTIFF.
+
 -----
 
 ## Licença

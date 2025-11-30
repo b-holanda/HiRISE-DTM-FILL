@@ -198,7 +198,6 @@ class DatasetBuilder:
             nodata = band_dtm.GetNoDataValue()
             if nodata is None: nodata = -3.4028234663852886e38
 
-            # 3. Loop de Corte e Salvamento
             for y in range(0, h - tile_size, stride_size):
                 for x in range(0, w - tile_size, stride_size):
                     dtm_arr = band_dtm.ReadAsArray(x, y, tile_size, tile_size)
@@ -207,8 +206,7 @@ class DatasetBuilder:
                         continue
 
                     ortho_arr = band_ortho.ReadAsArray(x, y, tile_size, tile_size)
-                    
-                    # Normalização
+   
                     ortho_arr = ortho_arr.astype(np.float32)
                     dtm_arr = dtm_arr.astype(np.float32)
                     
@@ -218,8 +216,6 @@ class DatasetBuilder:
                     d_min, d_max = dtm_arr.min(), dtm_arr.max()
                     dtm_norm = (dtm_arr - d_min) / (d_max - d_min + 1e-8)
 
-                    # 4. Salvar TIFs Temporários para o Consumidor
-                    # Cria um ID único para este tile
                     tile_uuid = uuid.uuid4().hex
                     tile_dir = temp_exchange_dir / dataset_split / tile_uuid
                     tile_dir.mkdir(parents=True, exist_ok=True)
@@ -230,8 +226,6 @@ class DatasetBuilder:
                     _save_tile_as_tif(ortho_norm, path_ortho_tif)
                     _save_tile_as_tif(dtm_norm, path_dtm_tif)
 
-                    # 5. Enviar para a Fila
-                    # O consumidor precisa saber onde estão os arquivos e metadados
                     tile_metadata = {
                         "split": dataset_split,
                         "pair_id": pair_identifier,
@@ -283,16 +277,33 @@ class DatasetBuilder:
             data_rows = []
             dirs_to_delete = []
 
+            def _read_tile_as_float32_bytes(path: str) -> bytes:
+                """
+                Abre o GeoTIFF e garante buffer float32 contíguo para o parquet.
+                """
+                ds = gdal.Open(path)
+                if ds is None:
+                    raise IOError(f"Falha ao abrir tile {path}")
+
+                band = ds.GetRasterBand(1)
+                if band is None:
+                    raise IOError(f"Band vazia em {path}")
+
+                array = band.ReadAsArray()
+                band = None
+                ds = None
+
+                if array is None:
+                    raise IOError(f"Não foi possível ler dados de {path}")
+
+                return np.ascontiguousarray(array, dtype=np.float32).tobytes()
+
             # Lê os arquivos do disco e transforma em bytes para o parquet
             for item in items_to_process:
                 try:
-                    # Lendo o arquivo TIF como bytes brutos
-                    # O arquivo é um GeoTIFF válido, então lemos os bytes do arquivo
-                    # para salvar no Parquet (conforme lógica original de 'bytes')
-                    with open(item["ortho_path"], "rb") as f:
-                        ortho_bytes = f.read()
-                    with open(item["dtm_path"], "rb") as f:
-                        dtm_bytes = f.read()
+                    # Converte o tile para bytes float32 crus (sem cabeçalho TIFF)
+                    ortho_bytes = _read_tile_as_float32_bytes(item["ortho_path"])
+                    dtm_bytes = _read_tile_as_float32_bytes(item["dtm_path"])
 
                     data_rows.append({
                         "pair_id": item["pair_id"],
@@ -359,19 +370,13 @@ class DatasetBuilder:
     def run(self) -> None:
         logger.info("Iniciando Pipeline Produtor-Consumidor...")
 
-        # 1. Definição de Recursos (Regra 80/20)
-        mem_avail_gb = _available_memory_mb() / 1024.0
-        safe_max_workers = max(1, int(mem_avail_gb // 4)) # Mais conservador pois temos consumidores + produtores
-        
-        total_workers_limit = self.max_workers if self.max_workers else (os.cpu_count() or 1)
-        total_workers = min(safe_max_workers, total_workers_limit)
+        total_workers = self.max_workers
 
         if total_workers < 2:
             logger.warning("Poucos workers disponíveis. Forçando 1 Produtor e 1 Consumidor.")
             n_consumers = 1
             n_producers = 1
         else:
-            # Regra: Sempre 20% escrita (mínimo 1)
             n_consumers = max(1, int(total_workers * 0.2))
             n_producers = total_workers - n_consumers
 

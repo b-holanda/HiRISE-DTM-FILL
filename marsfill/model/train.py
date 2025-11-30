@@ -43,6 +43,8 @@ class MarsDepthTrainer:
         dataset_root: str,
         dataset_prefix: str = "dataset/v1",
         output_prefix: str = "data/models",
+        image_tile_size: int = 512,
+        data_loader_workers: int = 4,
         is_distributed: bool = False,
         local_rank: int = 0,
         global_rank: int = 0,
@@ -64,6 +66,8 @@ class MarsDepthTrainer:
             dataset_root (str): Caminho raiz local para dados.
             dataset_prefix (str): Prefixo ou subpasta onde os dados estão localizados.
             output_prefix (str): Prefixo ou subpasta onde o modelo será salvo.
+            image_tile_size (int): Lado do tile (pixels) usado ao decodificar buffers dos Parquets.
+            data_loader_workers (int): Quantidade de workers do DataLoader (permite reduzir para testes).
             is_distributed (bool): Define se o treinamento ocorre em ambiente distribuído manualmente.
             local_rank (int): Rank do processo na máquina local.
             global_rank (int): Rank global do processo no cluster.
@@ -85,6 +89,8 @@ class MarsDepthTrainer:
         self.selected_model_name = selected_model_name
 
         self.dataset_root = dataset_root
+        self.image_tile_size = image_tile_size
+        self.data_loader_workers = data_loader_workers
 
         self._setup_processing_environment()
         self._resolve_io_paths(dataset_prefix, output_prefix)
@@ -295,23 +301,31 @@ class MarsDepthTrainer:
             )
 
         training_dataset = StreamingHiRISeDataset(
-            training_files, self.image_processor, self.global_rank, self.world_size, 512
+            training_files,
+            self.image_processor,
+            self.global_rank,
+            self.world_size,
+            self.image_tile_size,
         )
         validation_dataset = StreamingHiRISeDataset(
-            validation_files, self.image_processor, self.global_rank, self.world_size, 512
+            validation_files,
+            self.image_processor,
+            self.global_rank,
+            self.world_size,
+            self.image_tile_size,
         )
 
         training_loader = DataLoader(
             training_dataset,
             batch_size=self.batch_size,
-            num_workers=4,
+            num_workers=self.data_loader_workers,
             pin_memory=(self.device.type == "cuda"),
             shuffle=False,
         )
         validation_loader = DataLoader(
             validation_dataset,
             batch_size=self.batch_size,
-            num_workers=4,
+            num_workers=self.data_loader_workers,
             pin_memory=(self.device.type == "cuda"),
             shuffle=False,
         )

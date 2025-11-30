@@ -97,6 +97,8 @@ class TrainingCLI:
             dataset_root=dataset_root_path,
             dataset_prefix="dataset/v1",
             output_prefix="models",
+            image_tile_size=train_config.get("tile_size", 512),
+            data_loader_workers=train_config.get("data_loader_workers", 4),
             is_distributed=is_distributed,
             local_rank=local_rank,
             global_rank=global_rank,
