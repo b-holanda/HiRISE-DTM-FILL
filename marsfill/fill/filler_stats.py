@@ -81,6 +81,8 @@ class FillerStats:
         mae = np.mean(np.abs(y_true - y_pred))
 
         valid_values = gt_arr[metrics_mask]
+        if valid_values.size == 0:
+            raise ValueError("Sem valores válidos para normalização (GT).")
         min_val, max_val = float(valid_values.min()), float(valid_values.max())
         scale = max(max_val - min_val, 1.0)
 
@@ -127,8 +129,11 @@ class FillerStats:
     ):
         rows = np.any(eval_mask, axis=1)
         cols = np.any(eval_mask, axis=0)
-        y_min, y_max = np.where(rows)[0][[0, -1]]
-        x_min, x_max = np.where(cols)[0][[0, -1]]
+        if not np.any(rows) or not np.any(cols):
+            y_min, y_max, x_min, x_max = 0, gt_arr.shape[0], 0, gt_arr.shape[1]
+        else:
+            y_min, y_max = np.where(rows)[0][[0, -1]]
+            x_min, x_max = np.where(cols)[0][[0, -1]]
 
         pad = 50
         y_min = max(0, y_min - pad)
@@ -146,19 +151,28 @@ class FillerStats:
         gs = fig.add_gridspec(2, 3)
 
         ax1 = fig.add_subplot(gs[0, 0])
-        im1 = ax1.imshow(gt_crop, cmap="terrain")
+        finite_gt = np.isfinite(gt_crop)
+        if not np.any(finite_gt):
+            finite_gt = np.ones_like(gt_crop, dtype=bool)
+        vmin_gt, vmax_gt = np.percentile(gt_crop[finite_gt], (2, 98))
+
+        im1 = ax1.imshow(gt_crop, cmap="terrain", vmin=vmin_gt, vmax=vmax_gt)
         ax1.set_title("Ground Truth (Real)")
         plt.colorbar(im1, ax=ax1, fraction=0.046, pad=0.04)
 
         ax2 = fig.add_subplot(gs[0, 1])
-        im2 = ax2.imshow(filled_crop, cmap="terrain")
+        finite_filled = np.isfinite(filled_crop)
+        if not np.any(finite_filled):
+            finite_filled = np.ones_like(filled_crop, dtype=bool)
+        vmin_fill, vmax_fill = np.percentile(filled_crop[finite_filled], (2, 98))
+        im2 = ax2.imshow(filled_crop, cmap="terrain", vmin=vmin_fill, vmax=vmax_fill)
         ax2.set_title("Preenchimento (IA)")
         plt.colorbar(im2, ax=ax2, fraction=0.046, pad=0.04)
 
         ax3 = fig.add_subplot(gs[0, 2])
-        im3 = ax3.imshow(
-            diff_map, cmap="magma", vmin=0, vmax=np.percentile(diff_map[mask_crop], 95)
-        )
+        diff_vals = diff_map[mask_crop] if np.any(mask_crop) else diff_map[np.isfinite(diff_map)]
+        vmax_diff = np.percentile(diff_vals, 95) if diff_vals.size > 0 else diff_map.max(initial=0)
+        im3 = ax3.imshow(diff_map, cmap="magma", vmin=0, vmax=max(vmax_diff, 1e-6))
         ax3.set_title("Erro Absoluto")
         plt.colorbar(im3, ax=ax3, fraction=0.046, pad=0.04, label="Metros")
 
