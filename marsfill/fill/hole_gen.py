@@ -69,6 +69,7 @@ def apply_holes_to_raster(
     nodata_val = nodata_value if nodata_value is not None else detected_nodata
     if nodata_val is None:
         nodata_val = -3.4028234663852886e38  # default usado no projeto
+    nodata_val = float(nodata_val)
 
     holed = generate_holes_in_array(
         data=array,
