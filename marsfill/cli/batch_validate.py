@@ -81,7 +81,7 @@ def run_batch_process(test_dir, output_root_dir, model_path_str, profile="prod")
     try:
         # Carrega o modelo UMA ÚNICA VEZ na memória
         # Certifique-se de que AvailableModels.DPT_LARGE corresponde ao seu enum em train.py
-        model_enum = AvailableModels.DPT_LARGE 
+        model_enum = AvailableModels.INTEL_DPT_LARGE 
         evaluator = Evaluator(pretrained_model_name=model_enum, model_path_uri=model_path_str)
         
         # Instancia o Filler (reutilizável)
