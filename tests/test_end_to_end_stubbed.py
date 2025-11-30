@@ -59,7 +59,7 @@ def test_end_to_end_stubbed(monkeypatch, tmp_path):
         "Logger",
         lambda: types.SimpleNamespace(info=lambda *a, **k: None, error=lambda *a, **k: None),
     )
-    monkeypatch.setattr(sys, "argv", ["prog", "--profile", "prod", "--mode", "local"])
+    monkeypatch.setattr(sys, "argv", ["prog", "--profile", "prod"])
     train_cli.main()
 
     # Fill

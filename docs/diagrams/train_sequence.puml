@@ -1,5 +1,5 @@
 @startuml TrainPipeline
-title Sequência: ./train.sh (local ou s3)
+title Sequência: ./train.sh (somente local)
 
 actor Usuário
 participant "train.sh" as Shell
@@ -9,9 +9,9 @@ participant "MarsDepthTrainer" as Trainer
 participant "list_parquet_files" as Lister
 participant "DataLoaders\n(StreamingHiRISeDataset)" as Loaders
 participant "CombinedLoss" as Loss
-participant "Storage\n(Local FS ou S3)" as Storage
+participant "Storage\n(Disco local)" as Storage
 
-Usuário -> Shell: ./train.sh --profile <p> --mode <local|s3>
+Usuário -> Shell: ./train.sh --profile <p>
 Shell -> CLI: python marsfill/cli/train.py args
 CLI -> Profile: carregar perfil <p>
 Profile --> CLI: config train (batch, lr, paths)
@@ -32,6 +32,6 @@ loop Épocas
 end
 Trainer --> CLI: terminado
 CLI --> Shell: status
-Shell --> Usuário: modelo salvo (local ou S3)
+Shell --> Usuário: modelo salvo em data/models
 
 @enduml

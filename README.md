@@ -6,9 +6,7 @@
 
 ## Visão Geral
 
-`marsfill` é um pipeline que pega pares de produtos HiRISE (uma ortoimagem e seu DTM com buracos) e treina um modelo de IA para prever o relevo onde a fotogrametria falhou. Ele funciona em dois modos:
-- **local**: lê/escreve tudo na pasta `./data`.
-- **s3**: lê/escreve direto no bucket (`s3://hirise-dtm-fill` por padrão).
+`marsfill` é um pipeline que pega pares de produtos HiRISE (uma ortoimagem e seu DTM com buracos) e treina um modelo de IA para prever o relevo onde a fotogrametria falhou. O ETL e o treinamento agora operam apenas em modo **local** (pasta `./data`). A etapa de preenchimento continua aceitando `--mode local` ou `--mode s3` para ler/gravar resultados.
 
 O fluxo completo é:
 1) Buscar pares DTM+ORTHO públicos do PDS HiRISE, alinhar e cortar em blocos 512×512 sem lacunas, salvando em Parquet (treino/validação) e também guardando os pares de teste integrais.
@@ -23,13 +21,13 @@ O fluxo completo é:
   2. **Treinamento de Modelo (DPT-ViT)**: usa os blocos gerados para fazer fine-tuning de um modelo de profundidade monocular baseado em Vision Transformer (`Intel/dpt-large`), com uma função de perda que combina erro por pixel, gradiente de relevo e similaridade estrutural.
   3. **Preenchimento de DTMs (Inference + Pós-processamento)**: aplica o modelo treinado sobre DTMs com lacunas, trabalhando em tiles com padding de contexto, recalibra as predições para o intervalo real do DTM original e faz um blending suave nas bordas para evitar costuras visíveis.
 
-  Todo esse fluxo é parametrizado por perfis YAML (ex.: `prod`, `test`), e cada etapa pode operar tanto em modo local (estrutura de pastas em `./data`) quanto em modo S3 (bucket `s3://hirise-dtm-fill`), sem alterar o código principal.
+  Todo esse fluxo é parametrizado por perfis YAML (ex.: `prod`, `test`). O dataset e o treino funcionam apenas localmente (estrutura de pastas em `./data`); o preenchimento ainda pode apontar para S3, se configurado.
 
 - **Sequência do Pipeline**  
   ![Dataset Sequence](docs/images/dataset_sequence.png)  
-  *Mostra o ETL de dados: varredura do PDS HiRISE, download/alinhamento com GDAL, tiling sem NoData e salvamento em Parquet/ZIP (local ou S3), incluindo cópia dos pares de teste integrais.*
+  *ETL local: varredura do PDS HiRISE, download/alinhamento com GDAL, tiling sem NoData e salvamento em Parquet (train/val).*
   ![Train Sequence](docs/images/train_sequence.png)  
-  *Orquestração de treinamento: carga de perfil, resolução de caminhos local/S3, criação de DataLoaders streaming, loop de épocas com perda combinada e checkpoint do melhor modelo.*
+  *Treinamento local: carga de perfil, criação de DataLoaders streaming, loop de épocas com perda combinada e checkpoint em `data/models`.*
   ![Fill Sequence](docs/images/fill_sequence.png)
   *Inferência de preenchimento: leitura DTM/Ortho (local ou S3), inferência por blocos com padding, blending das bordas, geração de máscara, métricas e plots; outputs enviados ao destino configurado.*
 
@@ -71,7 +69,7 @@ conda activate marsfill-env
 
 ## Uso
 
-A geração do dataset agora roda apenas em modo local (grava na pasta configurada no profile, padrão `./data/dataset/v1`). As etapas de treino e preenchimento continuam aceitando `--mode local` ou `--mode s3`. Os comandos abaixo assumem o perfil `prod`; use `--profile test` para o perfil de teste.
+A geração do dataset e o treinamento rodam apenas em modo local (pasta padrão `./data`). A etapa de preenchimento ainda aceita `--mode local` ou `--mode s3` caso queira ler/gravar resultados em um bucket. Os comandos abaixo assumem o perfil `prod`; use `--profile test` para o perfil de teste.
 
 ### Testes
 
@@ -124,16 +122,11 @@ Requisitos recomendados (Intel/DPT-ViT-Large):
 - **Espaço em disco**: 2 TB
 
 ```bash
-# S3
-./train.sh --profile prod --mode s3
-# Local
-./train.sh --profile prod --mode local
+./train.sh --profile prod
 ```
 
-Para usar o modo `s3`, garanta que o dataset já foi enviado ao bucket (a etapa de criação salva apenas localmente).
-
-Entradas: `dataset/v1/train` e `dataset/v1/validation` no bucket ou em `./data`.  
-Saída: `s3://hirise-dtm-fill/models/marsfill_model.pth` ou `./data/models/marsfill_model.pth`.
+Entradas: `./data/dataset/v1/train` e `./data/dataset/v1/validation`.  
+Saída: `./data/models/marsfill_model.pth`.
 
 ### 3) Executar o modelo (preencher lacunas)
 

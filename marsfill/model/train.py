@@ -11,7 +11,6 @@ from transformers import DPTForDepthEstimation, DPTImageProcessor
 from pathlib import Path
 from enum import Enum
 from typing import Optional, Tuple
-import boto3
 
 from marsfill.model.combined_loss import LossWeights, CombinedLoss
 from marsfill.model.hirise_dataset import StreamingHiRISeDataset
@@ -41,17 +40,15 @@ class MarsDepthTrainer:
         total_epochs: int,
         weight_decay: float,
         loss_weights: LossWeights,
-        storage_mode: str,
         dataset_root: str,
         dataset_prefix: str = "dataset/v1",
-        output_prefix: str = "models",
+        output_prefix: str = "data/models",
         is_distributed: bool = False,
         local_rank: int = 0,
         global_rank: int = 0,
         world_size: int = 1,
         injected_model: Optional[torch.nn.Module] = None,
         injected_optimizer: Optional[optim.Optimizer] = None,
-        s3_client: Optional[boto3.client] = None,
         logger_instance: Optional[Logger] = None,
     ) -> None:
         """
@@ -64,8 +61,7 @@ class MarsDepthTrainer:
             total_epochs (int): Número total de épocas de treinamento.
             weight_decay (float): Fator de decaimento de peso para regularização.
             loss_weights (LossWeights): Pesos para as diferentes componentes da função de perda.
-            storage_mode (str): Modo de armazenamento, aceita "local" ou "s3".
-            dataset_root (str): Caminho raiz local ou nome do bucket S3.
+            dataset_root (str): Caminho raiz local para dados.
             dataset_prefix (str): Prefixo ou subpasta onde os dados estão localizados.
             output_prefix (str): Prefixo ou subpasta onde o modelo será salvo.
             is_distributed (bool): Define se o treinamento ocorre em ambiente distribuído manualmente.
@@ -88,15 +84,12 @@ class MarsDepthTrainer:
         self.total_epochs = total_epochs
         self.selected_model_name = selected_model_name
 
-        self.storage_mode = storage_mode
         self.dataset_root = dataset_root
-        self.s3_client = s3_client
 
         self._setup_processing_environment()
         self._resolve_io_paths(dataset_prefix, output_prefix)
 
         if self.is_master_process:
-            self.logger.info(f"Modo de Armazenamento: {self.storage_mode.upper()}")
             self.logger.info(f"Fonte de Treino:      {self.training_uri}")
             self.logger.info(f"Fonte de Validação:   {self.validation_uri}")
             self.logger.info(f"Destino do Modelo:    {self.model_output_uri}")
@@ -131,41 +124,15 @@ class MarsDepthTrainer:
             self.model = raw_model
 
     def _resolve_io_paths(self, input_prefix: str, output_prefix: str) -> None:
-        """
-        Configura as URIs completas para leitura de dados e escrita do modelo baseando-se no modo de armazenamento.
-
-        Parâmetros:
-            input_prefix (str): Caminho relativo para entrada dos dados.
-            output_prefix (str): Caminho relativo para saída do modelo.
-
-        Retorno:
-            None: Atualiza os atributos self.training_uri, self.validation_uri e self.model_output_uri.
-
-        Levanta:
-            ValueError: Se o storage_mode não for 'local' nem 's3'.
-        """
         clean_input = input_prefix.strip("/")
         clean_output = output_prefix.strip("/")
 
-        if self.storage_mode == "s3":
-            base_uri = f"s3://{self.dataset_root}"
-            self.training_uri = f"{base_uri}/{clean_input}/train"
-            self.validation_uri = f"{base_uri}/{clean_input}/validation"
-            self.model_output_uri = f"{base_uri}/{clean_output}/"
-
-            if not self.s3_client:
-                self.s3_client = boto3.client("s3")
-
-        elif self.storage_mode == "local":
-            base_path = Path(__file__).parent.parent.parent / Path(self.dataset_root)
-            self.training_uri = str(base_path / clean_input / "train")
-            self.validation_uri = str(base_path / clean_input / "validation")
-            self.model_output_uri = Path(__file__).parent.parent.parent / str(
-                base_path / clean_output
-            )
-
-        else:
-            raise ValueError("Storage mode deve ser 'local' ou 's3'")
+        base_path = Path(__file__).parent.parent.parent / Path(self.dataset_root)
+        self.training_uri = str(base_path / clean_input / "train")
+        self.validation_uri = str(base_path / clean_input / "validation")
+        self.model_output_uri = Path(__file__).parent.parent.parent / str(
+            base_path / clean_output
+        )
 
     def _setup_processing_environment(self) -> None:
         """
@@ -202,31 +169,9 @@ class MarsDepthTrainer:
         if self.is_distributed_mode and not distributed.is_initialized():
             distributed.init_process_group(backend="nccl")
 
-    def _upload_file_to_s3(self, local_file_path: str, filename: str) -> None:
-        """
-        Realiza o upload de um arquivo local para o bucket S3 configurado.
-
-        Parâmetros:
-            local_file_path (str): Caminho absoluto do arquivo temporário local.
-            filename (str): Nome do arquivo final no destino (chave S3).
-
-        Retorno:
-            None
-        """
-        bucket_name = self.dataset_root
-
-        prefix = self.model_output_uri.replace(f"s3://{bucket_name}/", "")
-        s3_key = f"{prefix.strip('/')}/{filename}"
-
-        try:
-            self.s3_client.upload_file(local_file_path, bucket_name, s3_key)
-            self.logger.info(f"☁️  Upload S3 concluído: s3://{bucket_name}/{s3_key}")
-        except Exception as error:
-            self.logger.error(f"Erro ao fazer upload do modelo: {error}")
-
     def _save_model_checkpoint(self, filename: str = "marsfill_model.pth") -> None:
         """
-        Salva o estado atual do modelo (state_dict). Suporta salvamento local direto ou upload para S3.
+        Salva o estado atual do modelo (state_dict) localmente.
         Apenas o processo mestre executa esta ação.
 
         Parâmetros:
@@ -240,21 +185,12 @@ class MarsDepthTrainer:
 
         model_to_save = self.model.module if self.is_distributed_mode else self.model
 
-        if self.storage_mode == "local":
-            output_path = Path(self.model_output_uri)
-            output_path.mkdir(parents=True, exist_ok=True)
+        output_path = Path(self.model_output_uri)
+        output_path.mkdir(parents=True, exist_ok=True)
 
-            full_path = output_path / filename
-            torch.save(model_to_save.state_dict(), full_path)
-            self.logger.info(f"💾 Modelo salvo localmente em: {full_path}")
-
-        elif self.storage_mode == "s3":
-            import tempfile
-
-            with tempfile.NamedTemporaryFile(suffix=".pth", delete=True) as temporary_file:
-                torch.save(model_to_save.state_dict(), temporary_file.name)
-                self.logger.info("Salvamento temporário concluído. Iniciando upload para S3...")
-                self._upload_file_to_s3(temporary_file.name, filename)
+        full_path = output_path / filename
+        torch.save(model_to_save.state_dict(), full_path)
+        self.logger.info(f"💾 Modelo salvo localmente em: {full_path}")
 
     def _execute_training_step(self, data_loader: DataLoader) -> float:
         """

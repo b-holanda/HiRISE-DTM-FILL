@@ -16,7 +16,7 @@ class TrainingCLI:
 
     Responsabilidades principais:
     - Ler perfis de configuração.
-    - Definir ambiente (local, S3, distribuído).
+    - Definir ambiente (local, distribuído).
     - Instanciar e executar o laço de treinamento.
     """
 
@@ -57,17 +57,12 @@ class TrainingCLI:
             )
         return False, 0, 0, 1
 
-    def execute_training(self, profile_name: str, storage_mode: str) -> None:
+    def execute_training(self, profile_name: str) -> None:
         """
         Carrega as configurações e executa o pipeline de treinamento.
 
         Args:
             profile_name: Nome do perfil de configuração (ex.: `prod`, `dev`).
-            storage_mode: Modo de armazenamento (`local` ou `s3`).
-
-        Raises:
-            RuntimeError: Se o perfil não existir.
-            ValueError: Se o modo for inválido ou faltarem campos obrigatórios.
         """
         is_distributed, local_rank, global_rank, world_size = self._setup_distributed_environment()
 
@@ -82,23 +77,10 @@ class TrainingCLI:
 
         dataset_root_path = ""
 
-        if storage_mode == "s3":
-            dataset_root_path = train_config.get("s3_bucket")
-            if not dataset_root_path:
-                error_message = "Modo S3 exige a chave 's3_bucket' definida no profile."
-                self.logger.error(error_message)
-                raise ValueError(error_message)
-
-        elif storage_mode == "local":
-            dataset_root_path = train_config.get("local_data_dir", "data")
-
-        else:
-            error_message = "Modo inválido. Use 'local' ou 's3'."
-            self.logger.error(error_message)
-            raise ValueError(error_message)
+        dataset_root_path = train_config.get("local_data_dir", "data")
 
         if global_rank == 0:
-            self.logger.info(f"🚀 Configuração: Profile={profile_name}, Mode={storage_mode}")
+            self.logger.info(f"🚀 Configuração: Profile={profile_name}, Modo=local")
             self.logger.info(f"📂 Root: {dataset_root_path}")
 
         trainer = self.trainer_class(
@@ -112,7 +94,6 @@ class TrainingCLI:
                 gradient_weight=train_config.get("w_grad", 1.0),
                 ssim_weight=train_config.get("w_ssim", 1.0),
             ),
-            storage_mode=storage_mode,
             dataset_root=dataset_root_path,
             dataset_prefix="dataset/v1",
             output_prefix="models",
@@ -131,16 +112,13 @@ def main():
     parser.add_argument(
         "--profile", type=str, default="prod", help="Nome do perfil de configuração"
     )
-    parser.add_argument(
-        "--mode", type=str, required=True, choices=["local", "s3"], help="Onde ler/salvar dados"
-    )
 
     arguments = parser.parse_args()
 
     cli_orchestrator = TrainingCLI()
 
     try:
-        cli_orchestrator.execute_training(arguments.profile, arguments.mode)
+        cli_orchestrator.execute_training(arguments.profile)
     except Exception as error:
         print(f"Erro Crítico na Execução: {error}")
         sys.exit(1)
