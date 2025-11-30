@@ -47,10 +47,6 @@ O fluxo completo é:
 ## Instalação
 
 ```bash
-git clone https://github.com/b-holanda/HiRISE-DTM-FILL.git
-
-cd HiRISE-DTM-FILL
-
 wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
 
 sudo chmod a+x Miniconda3-latest-Linux-x86_64.sh
@@ -58,6 +54,15 @@ sudo chmod a+x Miniconda3-latest-Linux-x86_64.sh
 ./Miniconda3-latest-Linux-x86_64.sh
 
 source  ~/miniconda3/bin/activate
+
+# opcional aws cli caso for subir algo no s3
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+unzip awscliv2.zip
+sudo ./aws/install
+
+git clone https://github.com/b-holanda/HiRISE-DTM-FILL.git
+
+cd HiRISE-DTM-FILL
 
 conda env create -n marsfill-env -f environment.yml
 # Se já existir, atualize:

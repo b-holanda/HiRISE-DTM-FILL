@@ -5,25 +5,29 @@ import argparse
 import gc
 import torch
 import numpy as np
+import csv  # Movido para o topo para garantir disponibilidade
 from pathlib import Path
 from tqdm import tqdm
-
 
 from marsfill.fill.dtm_filler import DTMFiller
 from marsfill.model.eval import Evaluator
 from marsfill.model.train import AvailableModels
 from marsfill.utils import Logger
-
 from marsfill.fill.filler_stats import FillerStats
-
 from tabulate import tabulate
 
 logger = Logger()
 
 def find_dataset_pairs(root_dir):
-    """Encontra os pares de arquivos (Input, Ortho, GT)."""
+    """
+    Encontra os pares de arquivos (Input, Ortho, GT).
+    Ajustado para o padrão onde o nome do arquivo base é consistente na pasta.
+    Ex: Pasta 'dunes' -> Input: 'dune_with_nodata.tif', GT: 'dune.IMG', Ortho: 'dune.JP2'
+    """
     cases = []
     root = Path(root_dir)
+    
+    # Busca recursiva por todos os inputs
     inputs = list(root.rglob("*_with_nodata.tif"))
     
     if not inputs:
@@ -34,33 +38,41 @@ def find_dataset_pairs(root_dir):
 
     for input_path in inputs:
         folder = input_path.parent
-        base_name = input_path.name.replace("_with_nodata.tif", "")
         
+        # --- LÓGICA ATUALIZADA ---
+        # Extrai o nome base removendo o sufixo do input
+        # Ex: 'dune_with_nodata.tif' -> base_name = 'dune'
+        base_name = input_path.stem.replace("_with_nodata", "")
+        
+        # 1. Busca pelo Ground Truth (GT)
         gt_candidates = [
-            folder / (base_name + ".IMG"),
-            folder / (base_name + ".tif"),
-            folder / (base_name + ".GTiff")
+            folder / f"{base_name}.IMG",
+            folder / f"{base_name}.tif",
+            folder / f"{base_name}.GTiff"
         ]
         gt_path = next((p for p in gt_candidates if p.exists()), None)
         
-        orbit_id_parts = base_name.split('_')[1:3]
-        if len(orbit_id_parts) >= 2:
-            orbit_key = f"{orbit_id_parts[0]}_{orbit_id_parts[1]}"
-            ortho_candidates = list(folder.glob(f"*{orbit_key}*.JP2")) + \
-                               list(folder.glob(f"*{orbit_key}*.tif"))
-            
-            ortho_path = next((p for p in ortho_candidates 
-                               if "DTEPC" not in p.name and "with_nodata" not in p.name), None)
-        else:
-            ortho_path = None
+        # 2. Busca pelo Ortomosaico (Ortho)
+        ortho_candidates = [
+            folder / f"{base_name}.JP2",
+            folder / f"{base_name}.tif"
+        ]
+        
+        # Filtra para garantir que o ortho não seja o próprio input ou GT (caso sejam todos .tif)
+        ortho_path = next((p for p in ortho_candidates 
+                           if p.exists() 
+                           and p != input_path 
+                           and p != gt_path
+                           and "with_nodata" not in p.name), None)
 
+        # Se encontrou o trio completo
         if gt_path and ortho_path:
             cases.append({
-                "id": base_name,
+                "id": base_name,          # Ex: dune
                 "input": input_path,
                 "gt": gt_path,
                 "ortho": ortho_path,
-                "folder": folder.name
+                "folder": folder.name     # Ex: dunes
             })
 
     return cases
@@ -87,8 +99,10 @@ def run_batch_process(test_dir, output_root_dir, model_path_str, profile="prod")
     pbar = tqdm(cases, desc="Progresso Global", unit="cena")
 
     for case in pbar:
-        pbar.set_description(f"Processando {case['id'][:15]}")
+        # Mostra o ID atual na barra de progresso
+        pbar.set_description(f"Processando {case['folder']}/{case['id']}")
         
+        # Estrutura de saída: output_root / nome_da_pasta / nome_do_arquivo
         case_out_dir = Path(output_root_dir) / case['folder'] / case['id']
         case_out_dir.mkdir(parents=True, exist_ok=True)
         
@@ -103,7 +117,6 @@ def run_batch_process(test_dir, output_root_dir, model_path_str, profile="prod")
             # 2. Cálculo de Métricas e Gráficos
             stats = FillerStats(output_dir=case_out_dir)
             
-            # --- CORREÇÃO AQUI: Recebe apenas 1 valor (metrics) ---
             metrics = stats.calculate_metrics(
                 gt_path=case['gt'],
                 filled_path=final_dtm,
@@ -111,8 +124,6 @@ def run_batch_process(test_dir, output_root_dir, model_path_str, profile="prod")
             )
             
             if metrics and metrics.get('evaluated_pixels', 0) > 0:
-                # Gera os 6 gráficos/imagens separados
-                # O método generate_all_outputs carrega os arquivos por conta própria
                 stats.generate_all_outputs(
                     gt_path=case['gt'],
                     input_path=case['input'],
@@ -123,7 +134,8 @@ def run_batch_process(test_dir, output_root_dir, model_path_str, profile="prod")
                 )
                 
                 res_data = metrics.copy()
-                res_data['id'] = case['id']
+                # Cria um ID composto para o relatório (ex: dunes/dune)
+                res_data['id'] = f"{case['folder']}/{case['id']}"
                 res_data['type'] = case['folder']
                 results.append(res_data)
             else:
@@ -131,8 +143,6 @@ def run_batch_process(test_dir, output_root_dir, model_path_str, profile="prod")
 
         except Exception as e:
             tqdm.write(f"Erro em {case['id']}: {e}")
-            # import traceback
-            # traceback.print_exc()
 
         finally:
             # --- OTIMIZAÇÃO DE MEMÓRIA ---
@@ -158,7 +168,7 @@ def run_batch_process(test_dir, output_root_dir, model_path_str, profile="prod")
             
             table_data.append([
                 r['type'], 
-                r['id'][:25], 
+                r['id'], 
                 f"{r.get('rmse_m', 0):.2f}", 
                 f"{r.get('ssim', 0):.4f}", 
                 f"{r.get('execution_time_s', 0):.2f}s"
@@ -168,7 +178,6 @@ def run_batch_process(test_dir, output_root_dir, model_path_str, profile="prod")
         
         print(tabulate(table_data, headers=headers, tablefmt="github"))
 
-
         print("-" * 65)
         if len(results) > 0:
             print(f"MÉDIA GLOBAL ({len(results)} amostras):")
@@ -177,7 +186,6 @@ def run_batch_process(test_dir, output_root_dir, model_path_str, profile="prod")
             print(f"Tempo Total: {np.sum(times):.2f} s")
         print("="*65)
         
-        import csv
         csv_path = Path(output_root_dir) / "batch_summary_optimized.csv"
         with open(csv_path, 'w', newline='') as f:
             writer = csv.writer(f)
