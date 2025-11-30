@@ -66,8 +66,12 @@ def test_end_to_end_stubbed(monkeypatch, tmp_path):
     test_id = "a"
     pair_dir = Path(tmp_path) / "dataset/v1/test" / f"test-{test_id}"
     pair_dir.mkdir(parents=True, exist_ok=True)
-    (pair_dir / "dtm.IMG").write_text("dtm")
-    (pair_dir / "ortho.JP2").write_text("ortho")
+    dtm_path = pair_dir / "dtm.IMG"
+    ortho_path = pair_dir / "ortho.JP2"
+    gt_path = Path(tmp_path) / "gt.tif"
+    dtm_path.write_text("dtm")
+    ortho_path.write_text("ortho")
+    gt_path.write_text("gt")
     monkeypatch.setattr(
         fill_cli,
         "get_profile",
@@ -76,8 +80,6 @@ def test_end_to_end_stubbed(monkeypatch, tmp_path):
                 "model_path": "models/marsfill_model.pth",
                 "padding_size": 1,
                 "tile_size": 2,
-                "dataset_prefix": "dataset/v1",
-                "output_prefix": "filled",
                 "local_base_dir": str(tmp_path),
             }
         },
@@ -110,5 +112,21 @@ def test_end_to_end_stubbed(monkeypatch, tmp_path):
         ),
     )
     monkeypatch.setattr(fill_cli, "logger", types.SimpleNamespace(info=lambda *a, **k: None))
-    monkeypatch.setattr(sys, "argv", ["prog", "--pair", f"test-{test_id}", "--profile", "prod"])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "prog",
+            "--dtm",
+            str(dtm_path),
+            "--ortho",
+            str(ortho_path),
+            "--out_dir",
+            str(Path(tmp_path) / "filled"),
+            "--gt",
+            str(gt_path),
+            "--profile",
+            "prod",
+        ],
+    )
     fill_cli.main()

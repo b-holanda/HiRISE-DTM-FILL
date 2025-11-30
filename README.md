@@ -138,28 +138,31 @@ Requisitos recomendados:
 - **Espaço em disco**: 100 GB
 
 ```bash
-./fill.sh --pair test-a --profile prod
+./fill.sh --profile prod \
+  --dtm data/dataset/v1/test/dunes/DTEPC_088676_2540_088162_2540_A01_with_nodata.IMG \
+  --ortho data/dataset/v1/test/dunes/ESP_088676_2540_RED_A_01_ORTHO.JP2 \
+  --out_dir data/filled/dunes
 ```
 
 Entradas:
-- Modelo: `./data/models/marsfill_model.pth`
-- Dados de teste: `./data/dataset/v1/test/<pasta_do_par>/{dtm.IMG,ortho.JP2}`
+- Modelo: `data/models/marsfill_model.pth`
+- DTM: `data/dataset/v1/test/dunes/DTEPC_088676_2540_088162_2540_A01_with_nodata.IMG`
+- ORTHOIMAGE: `data/dataset/v1/test/dunes/ESP_088676_2540_RED_A_01_ORTHO.JP2`
 
 Saídas:
-- DTM preenchido: `./data/filled/<pasta_do_par>/predicted_dtm.tif`
-- Máscara: `.../mask_predicted_dtm.tif`
-- Métricas: `.../metrics.json`
-- Gráficos: `.../result_*.jpg`
+- DTM preenchido: `data/filled/dunes/DTEPC_088676_2540_088162_2540_A01_filled.tif`
+- Máscara: `data/filled/dunes/DTEPC_088676_2540_088162_2540_A01_filled_mask.tif`
+- Métricas: `data/filled/dunes/metrics.json`
+- Gráficos: `data/filled/dunes/result_*.jpg`
 
 ### Utilitário: Gerar Buracos (NoData) sintéticos
 
 Crie variações de DTMs com lacunas para testes/controlados:
 
 ```bash
-python -m marsfill.fill.hole_gen \
-  --input data/dataset/v1/test/test-a/dtm.IMG \
-  --output data/dataset/v1/test/test-a/dtm_holes.tif \
-  --holes 5 --min-radius 8 --max-radius 16 --seed 42
+./hole_gen.sh \
+  -i data/dataset/v1/test/dunes/DTEPC_088676_2540_088162_2540_A01.IMG \
+  -o data/dataset/v1/test/dunes/DTEPC_088676_2540_088162_2540_A01_with_nodata.tif
 ```
 
 O script insere buracos circulares de NoData aleatórios e salva um novo GeoTIFF.

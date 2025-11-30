@@ -28,3 +28,10 @@ fill:
   dataset_prefix: "dataset/v1"
   output_prefix: "filled"
   local_base_dir: "data"
+
+hole_gen:
+  holes: 5
+  min_radius: 8
+  max_radius: 16
+  seed: 42
+  nodata: -3.4028234663852886e38

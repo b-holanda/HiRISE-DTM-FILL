@@ -1,4 +1,3 @@
-from asyncio.log import logger
 from pathlib import Path
 import time
 from marsfill.utils import Logger
@@ -48,7 +47,10 @@ class FillerStats:
             logger.info("⚠️ Nenhuma máscara fornecida. Avaliando na imagem inteira.")
             hole_mask = np.ones_like(gt_arr, dtype=bool)
 
-        valid_gt_mask = (gt_arr != gt_nodata) & (~np.isnan(gt_arr))
+        if gt_nodata is None:
+            valid_gt_mask = ~np.isnan(gt_arr)
+        else:
+            valid_gt_mask = (gt_arr != gt_nodata) & (~np.isnan(gt_arr))
         eval_mask = hole_mask & valid_gt_mask
 
         if np.sum(eval_mask) == 0:
@@ -60,12 +62,26 @@ class FillerStats:
         rmse = np.sqrt(np.mean((y_true - y_pred) ** 2))
         mae = np.mean(np.abs(y_true - y_pred))
 
-        gt_tensor = torch.tensor(gt_arr).unsqueeze(0).unsqueeze(0).to(self.device)
-        pred_tensor = torch.tensor(filled_arr).unsqueeze(0).unsqueeze(0).to(self.device)
+        valid_values = gt_arr[valid_gt_mask]
+        min_val, max_val = float(valid_values.min()), float(valid_values.max())
+        scale = max(max_val - min_val, 1.0)
 
-        min_val, max_val = gt_arr.min(), gt_arr.max()
-        gt_norm = (gt_tensor - min_val) / (max_val - min_val)
-        pred_norm = (pred_tensor - min_val) / (max_val - min_val)
+        gt_tensor = (
+            torch.tensor(gt_arr, dtype=torch.float32).unsqueeze(0).unsqueeze(0).to(self.device)
+        )
+        pred_tensor = (
+            torch.tensor(filled_arr, dtype=torch.float32).unsqueeze(0).unsqueeze(0).to(self.device)
+        )
+        mask_tensor = torch.tensor(eval_mask, dtype=torch.bool).unsqueeze(0).unsqueeze(0).to(
+            self.device
+        )
+
+        # Fora da região avaliada, usa o ground truth para evitar impacto na SSIM
+        pred_tensor_masked = torch.where(mask_tensor, pred_tensor, gt_tensor)
+        gt_tensor_masked = torch.where(mask_tensor, gt_tensor, gt_tensor)
+
+        gt_norm = torch.clamp((gt_tensor_masked - min_val) / scale, 0.0, 1.0)
+        pred_norm = torch.clamp((pred_tensor_masked - min_val) / scale, 0.0, 1.0)
 
         ssim_score = self.ssim_calc(pred_norm, gt_norm).item()
 

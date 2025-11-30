@@ -113,9 +113,9 @@ class DTMFiller:
         Returns:
             Caminhos do DTM preenchido e da máscara dentro da área de trabalho.
         """
-        base_filename = os.path.basename(source_dtm_path).split(".")[0].lower()
-        working_dtm_path = working_directory / f"predicted_{base_filename}.tif"
-        working_mask_path = working_directory / f"mask_predicted_{base_filename}.tif"
+        base_filename = Path(source_dtm_path).stem
+        working_dtm_path = working_directory / f"{base_filename}_filled.tif"
+        working_mask_path = working_directory / f"{base_filename}_filled_mask.tif"
 
         if not os.path.exists(working_dtm_path):
             logger.info(f"Copiando DTM original para área de trabalho: {working_dtm_path}")

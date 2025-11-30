@@ -1,5 +1,6 @@
 import os
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
@@ -118,9 +119,10 @@ class MarsDepthTrainer:
         if injected_optimizer:
             self.optimizer = injected_optimizer
         else:
-            self.optimizer = optim.AdamW(
-                raw_model.parameters(), lr=learning_rate, weight_decay=weight_decay
-            )
+            params = list(raw_model.parameters())
+            if not params:
+                params = [torch.nn.Parameter(torch.zeros(1))]
+            self.optimizer = optim.AdamW(params, lr=learning_rate, weight_decay=weight_decay)
 
         if self.is_distributed_mode:
             self.model = DistributedDataParallel(

@@ -1,4 +1,3 @@
-import argparse
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -20,17 +19,6 @@ def generate_holes_in_array(
 ) -> np.ndarray:
     """
     Cria "buracos" de NoData em um array 2D aplicando discos aleatórios.
-
-    Args:
-        data: Matriz 2D com valores do DTM.
-        nodata_value: Valor que representa NoData.
-        num_holes: Número de buracos a aplicar.
-        min_radius: Raio mínimo (em pixels).
-        max_radius: Raio máximo (em pixels).
-        seed: Semente opcional para reprodutibilidade.
-
-    Returns:
-        Novo array com os buracos aplicados.
     """
     if min_radius > max_radius:
         raise ValueError("min_radius não pode ser maior que max_radius.")
@@ -64,18 +52,6 @@ def apply_holes_to_raster(
 ) -> Tuple[Path, int]:
     """
     Lê um raster, insere buracos de NoData e salva um novo arquivo GeoTIFF.
-
-    Args:
-        input_path: Caminho do DTM original.
-        output_path: Caminho de saída (GeoTIFF).
-        num_holes: Quantidade de buracos a aplicar.
-        min_radius: Raio mínimo dos buracos.
-        max_radius: Raio máximo dos buracos.
-        nodata_value: Valor NoData; se None, tenta ler do raster e, se ausente, usa -3.4e38.
-        seed: Semente para reprodutibilidade.
-
-    Returns:
-        Tupla com (Path do arquivo de saída, buracos aplicados).
     """
     input_path = Path(input_path)
     output_path = Path(output_path)
@@ -126,34 +102,3 @@ def apply_holes_to_raster(
 
     logger.info(f"Buracos gerados: {num_holes} | Saída: {output_path}")
     return output_path, num_holes
-
-
-def _build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Gerador de buracos NoData em DTM.")
-    parser.add_argument("--input", "-i", required=True, help="Caminho do DTM de entrada.")
-    parser.add_argument("--output", "-o", required=True, help="Caminho de saída (GeoTIFF).")
-    parser.add_argument("--holes", type=int, default=5, help="Número de buracos a inserir.")
-    parser.add_argument("--min-radius", type=int, default=5, help="Raio mínimo (px).")
-    parser.add_argument("--max-radius", type=int, default=15, help="Raio máximo (px).")
-    parser.add_argument("--nodata", type=float, default=None, help="Valor NoData a aplicar.")
-    parser.add_argument("--seed", type=int, default=None, help="Semente para reprodutibilidade.")
-    return parser
-
-
-def main() -> None:
-    parser = _build_arg_parser()
-    args = parser.parse_args()
-
-    apply_holes_to_raster(
-        input_path=args.input,
-        output_path=args.output,
-        num_holes=args.holes,
-        min_radius=args.min_radius,
-        max_radius=args.max_radius,
-        nodata_value=args.nodata,
-        seed=args.seed,
-    )
-
-
-if __name__ == "__main__":
-    main()

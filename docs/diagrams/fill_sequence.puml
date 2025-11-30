@@ -11,7 +11,7 @@ participant "GDAL + Tiles" as GDAL
 participant "FillerStats" as Stats
 participant "Storage\n(Disco local)" as Storage
 
-Usuário -> Shell: ./fill.sh --pair <pasta> --profile <cfg>
+Usuário -> Shell: ./fill.sh --dtm <dtm> --ortho <ortho> --out_dir <dir> --profile <cfg>
 Shell -> CLI: python marsfill/cli/fill.py args
 CLI -> Profile: carregar perfil <p>
 Profile --> CLI: paths (modelo, dataset, output)

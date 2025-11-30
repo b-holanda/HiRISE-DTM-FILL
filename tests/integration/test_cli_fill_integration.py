@@ -6,12 +6,13 @@ from marsfill.cli import fill as fill_cli
 
 
 def test_fill_cli_stubbed_local(monkeypatch, tmp_path):
-    pair_name = "pair-a"
-    dataset_root = tmp_path / "dataset/v1/test" / pair_name
-    output_root = tmp_path / "filled"
+    dataset_root = tmp_path / "dataset/v1/test/pair-a"
+    output_root = tmp_path / "filled/dunes"
     dataset_root.mkdir(parents=True, exist_ok=True)
-    (dataset_root / "dtm.IMG").write_text("dtm")
-    (dataset_root / "ortho.JP2").write_text("ortho")
+    dtm_path = dataset_root / "dtm.IMG"
+    ortho_path = dataset_root / "ortho.JP2"
+    dtm_path.write_text("dtm")
+    ortho_path.write_text("ortho")
 
     def fake_profile(name):
         return {
@@ -19,8 +20,6 @@ def test_fill_cli_stubbed_local(monkeypatch, tmp_path):
                 "model_path": "models/marsfill_model.pth",
                 "padding_size": 1,
                 "tile_size": 2,
-                "dataset_prefix": "dataset/v1",
-                "output_prefix": "filled",
                 "local_base_dir": str(tmp_path),
             }
         }
@@ -36,11 +35,11 @@ def test_fill_cli_stubbed_local(monkeypatch, tmp_path):
         def fill(self, dtm_path, ortho_path, output_root, keep_local_output=False):
             # Retorna URIs/caminhos simulados
             return (
-                str(Path(output_root) / "predicted_dtm.tif"),
-                str(Path(output_root) / "mask_predicted_dtm.tif"),
-                Path(output_root) / "predicted_dtm.tif",
-                Path(output_root) / "mask_predicted_dtm.tif",
-                Path(ortho_path),
+                str(Path(output_root) / "dtm_filled.tif"),
+                str(Path(output_root) / "dtm_filled_mask.tif"),
+                Path(output_root) / "dtm_filled.tif",
+                Path(output_root) / "dtm_filled_mask.tif",
+                Path(dtm_path),
             )
 
     class FakeStats:
@@ -59,8 +58,21 @@ def test_fill_cli_stubbed_local(monkeypatch, tmp_path):
     monkeypatch.setattr(fill_cli, "FillerStats", FakeStats)
     monkeypatch.setattr(fill_cli, "logger", types.SimpleNamespace(info=lambda *a, **k: None))
 
-    monkeypatch.setattr(sys, "argv", ["prog", "--pair", pair_name, "--profile", "prod"])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "prog",
+            "--dtm",
+            str(dtm_path),
+            "--ortho",
+            str(ortho_path),
+            "--out_dir",
+            str(output_root),
+            "--profile",
+            "prod",
+        ],
+    )
     fill_cli.main()
 
-    expected_output_dir = output_root / pair_name
-    assert expected_output_dir.exists()
+    assert output_root.exists()

@@ -19,13 +19,30 @@ def main():
     )
 
     parser.add_argument(
-        "--pair",
-        "-t",
+        "--dtm",
+        "-d",
         required=True,
-        help="Nome da pasta em data/dataset/v1/test contendo dtm.IMG e ortho.JP2",
+        help="Caminho do DTM (com buracos) a ser preenchido.",
+    )
+    parser.add_argument(
+        "--ortho",
+        "-o",
+        required=True,
+        help="Caminho da ortofoto correspondente.",
+    )
+    parser.add_argument(
+        "--out_dir",
+        "-O",
+        required=True,
+        help="Diretório de saída onde serão gravados DTM preenchido, máscara e métricas.",
     )
     parser.add_argument(
         "--profile", "-p", default="prod", help="Perfil de configuração [prod|test]"
+    )
+    parser.add_argument(
+        "--gt",
+        help="Caminho opcional para o DTM original (sem buracos) usado para métricas. "
+        "Se omitido, usa o mesmo DTM de entrada.",
     )
 
     args = parser.parse_args()
@@ -36,23 +53,17 @@ def main():
 
     fill_cfg = profile.get("fill", {})
     model_cfg_path = fill_cfg.get("model_path", "models/marsfill_model.pth")
-    dataset_prefix = fill_cfg.get("dataset_prefix", "dataset/v1")
-    output_prefix = fill_cfg.get("output_prefix", "filled")
     local_base_dir = fill_cfg.get("local_base_dir", "data")
 
     base_path = PROJECT_ROOT / local_base_dir
     model_path = base_path / model_cfg_path
-    dataset_root = base_path / dataset_prefix / "test" / args.pair
-    output_root = base_path / output_prefix / args.pair
 
-    dtm_path = dataset_root / "dtm.IMG"
-    ortho_path = dataset_root / "ortho.JP2"
-    output_dir = output_root
+    dtm_path = Path(args.dtm)
+    ortho_path = Path(args.ortho)
+    output_dir = Path(args.out_dir)
 
     if not dtm_path.exists() or not ortho_path.exists():
-        raise FileNotFoundError(
-            f"Arquivos do par não encontrados em {dataset_root}. Esperados dtm.IMG e ortho.JP2."
-        )
+        raise FileNotFoundError("DTM ou ortho não encontrados para preenchimento.")
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -75,8 +86,12 @@ def main():
     local_output_dir = local_filled_path.parent
     stats = FillerStats(output_dir=local_output_dir)
 
+    gt_path = Path(args.gt) if args.gt else local_original_dtm
+    if not gt_path.exists():
+        raise FileNotFoundError(f"Ground truth '{gt_path}' não encontrado para cálculo de métricas.")
+
     metrics, gt_arr, filled_arr, eval_mask = stats.calculate_metrics(
-        gt_path=local_original_dtm, filled_path=local_filled_path, mask_path=local_mask_path
+        gt_path=gt_path, filled_path=local_filled_path, mask_path=local_mask_path
     )
     stats.plot_results(eval_mask=eval_mask, filled_arr=filled_arr, gt_arr=gt_arr, metrics=metrics)
 
