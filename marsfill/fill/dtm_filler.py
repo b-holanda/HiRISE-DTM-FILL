@@ -342,7 +342,22 @@ class DTMFiller:
     ) -> np.ndarray:
         mu_r, std_r = np.mean(real[mask]), np.std(real[mask])
         mu_p, std_p = np.mean(pred[mask]), np.std(pred[mask])
-        return pred * (std_r / (std_p + 1e-8)) + (mu_r - (mu_p * (std_r / (std_p + 1e-8))))
+
+        if not np.isfinite(std_p) or std_p < 1e-6:
+            scale = 1.0
+        else:
+            scale = std_r / (std_p + 1e-8)
+        shift = mu_r - (mu_p * scale)
+
+        out = pred * scale + shift
+        if not np.isfinite(out).all():
+            out = np.nan_to_num(out, nan=mu_r, posinf=mu_r, neginf=mu_r)
+
+        # Evita explosões: limita ao intervalo plausível dos dados reais
+        clamp_std = std_r if np.isfinite(std_r) and std_r > 1e-6 else 1.0
+        lower = mu_r - 5 * clamp_std
+        upper = mu_r + 5 * clamp_std
+        return np.clip(out, lower, upper)
 
     def _blend_prediction_edges(
         self, dtm: np.ndarray, mask: np.ndarray, width: int = 5

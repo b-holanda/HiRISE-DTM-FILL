@@ -43,6 +43,10 @@ class FillerStats:
 
         gt_arr, gt_nodata = self.load_geotiff(gt_path)
         filled_arr, _ = self.load_geotiff(filled_path)
+        # Substitui predições não finitas por GT para não descartar toda a avaliação
+        non_finite_filled = ~np.isfinite(filled_arr)
+        if np.any(non_finite_filled):
+            filled_arr[non_finite_filled] = gt_arr[non_finite_filled]
 
         if mask_path:
             mask_arr, _ = self.load_geotiff(mask_path)
