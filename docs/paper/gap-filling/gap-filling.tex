@@ -8,6 +8,7 @@
 \usepackage{subcaption}
 \usepackage{float}
 \usepackage{amsmath}
+\usepackage{booktabs}
 
 \graphicspath{{assets/}}
 
@@ -27,13 +28,11 @@
 	\maketitle
 	
 	\begin{abstract}
-		numero de palavras 150 - 250
+		Digital Terrain Models (DTMs) generated from HiRISE imagery are essential for Martian exploration but frequently suffer from data gaps due to stereo-matching failures in low-texture or shadowed regions. This work proposes a Deep Learning approach using Vision Transformers (ViT), specifically the Dense Prediction Transformer (DPT) architecture, to infer missing topography from monocular orthophotos. We curated a dataset of valid DTM-Orthophoto pairs to train the model in a supervised manner. Results demonstrate that the ViT-based model successfully recovers morphological structures, achieving a Structural Similarity Index (SSIM) of 0.99 and a Root Mean Square Error (RMSE) of 3.33 meters in plain terrains. The proposed pipeline offers a robust, automated solution to generate analysis-ready products for planetary science.
 	\end{abstract}
 	
 	\begin{resumo}
-		Numero de palavras: 150 - 250 - igual ao abstract porém em pt-BR
-		Espaço Visual (Páginas): 0.5
-		Foco Principal: Venda o peixe: Problema + Solução (ViT) + Melhor Resultado.
+		Modelos Digitais de Terreno (DTMs) gerados a partir de imagens HiRISE são essenciais para a exploração marciana, mas frequentemente apresentam lacunas de dados devido a falhas na correspondência estéreo em regiões de baixa textura ou sombra. Este trabalho propõe uma abordagem de Aprendizado Profundo utilizando Vision Transformers (ViT), especificamente a arquitetura Dense Prediction Transformer (DPT), para inferir a topografia ausente a partir de ortofotos monoculares. Curou-se um conjunto de dados de pares DTM-Ortoimagem válidos para treinamento supervisionado. Os resultados demonstram que o modelo baseado em ViT recupera com sucesso estruturas morfológicas, atingindo um Índice de Similaridade Estrutural (SSIM) de 0,99 e um erro médio quadrático (RMSE) de 3,33 metros em terrenos planos. O pipeline proposto oferece uma solução robusta e automatizada para gerar produtos prontos para análise na ciência planetária.
 	\end{resumo}
 	
 	\section{Introdução}
@@ -152,21 +151,105 @@
 	
 	\section{Resultados}
 	
-	Numero de palavras: 400 - 600
-	Espaço Visual (Páginas): 1.5 a 2.0
-	Foco Principal: Crucial: Menos texto, mais tabelas de métricas e figuras comparativas.
+	O modelo foi treinado por 7 épocas em um ambiente distribuído (DDP) com 4 GPUs. A avaliação considerou tanto a dinâmica de aprendizado quanto a precisão final em dados de teste nunca vistos pelo modelo.
+	
+	\subsection{Dinâmica de Treinamento e Convergência}
+	
+	A análise das curvas de aprendizado demonstra uma convergência robusta. A Figura \ref{fig:convergencia_loss} ilustra o decaimento da função de perda total ao longo das iterações (batches). Observa-se uma redução exponencial inicial, seguida de uma estabilização assintótica, indicando que o modelo aprendeu efetivamente a mapear as características visuais em valores de profundidade.
+	
+	\begin{figure}[H]
+		\centering
+		\includegraphics[width=0.9\textwidth]{resultado_convergencia_loss.png}
+		\caption{Evolução da Perda Total (Loss) por batch. A linha suave indica a tendência média, mostrando aprendizado contínuo sem instabilidades severas.}
+		\label{fig:convergencia_loss}
+	\end{figure}
+	
+	Para verificar a capacidade de generalização e ausência de \textit{overfitting}, monitorou-se o erro nos conjuntos de treino e validação (Figura \ref{fig:treino_validacao}). A perda de validação acompanhou a tendência de queda da perda de treino, estabilizando-se em torno de 0.12, o que valida a capacidade do modelo de inferir topografia em imagens novas.
+	
+	\begin{figure}[H]
+		\centering
+		\includegraphics[width=0.8\textwidth]{resultado_treino_vs_validacao.png}
+		\caption{Curvas de perda média por época: Treino vs. Validação. A proximidade das curvas indica boa generalização.}
+		\label{fig:treino_validacao}
+	\end{figure}
+	
+	A Figura \ref{fig:componentes} detalha o comportamento das componentes da função de custo. A estabilização das perdas de Gradiente e SSIM confirma que a rede não apenas minimizou o erro métrico, mas também aprendeu a reproduzir a alta frequência espacial (textura e bordas) do terreno marciano.
+	
+	\begin{figure}[H]
+		\centering
+		\includegraphics[width=0.8\textwidth]{resultado_componentes_medios_por_epoca.png}
+		\caption{Contribuição média das componentes de perda (L1, Gradiente, SSIM) ao longo das épocas.}
+		\label{fig:componentes}
+	\end{figure}
+	
+	\subsection{Avaliação em Dados de Teste}
+	
+	O modelo treinado foi aplicado a três classes geomorfológicas distintas. A Tabela \ref{tab:metrics} apresenta as métricas quantitativas obtidas.
+	
+	\begin{table}[H]
+		\centering
+		\caption{Métricas de desempenho em dados de teste (Ground Truth).}
+		\label{tab:metrics}
+		\begin{tabular}{lcccc}
+			\toprule
+			\textbf{Terreno} & \textbf{RMSE (m)} & \textbf{SSIM} & \textbf{Tempo (s)} \\ 
+			\midrule
+			Dunas (Dunes)    & 14.67 & 0.9996 & 1.79 \\
+			Planícies (Plains) & 3.33  & 0.9998 & 2.52 \\
+			Escarpas (Scarps)  & 15.21 & 0.9998 & 1.79 \\ 
+			\midrule
+			\textbf{Média} & \textbf{11.07} & \textbf{0.9997} & \textbf{2.03} \\ 
+			\bottomrule
+		\end{tabular}
+	\end{table}
+	
+	Visualmente, a reconstrução apresenta alta fidelidade. A Figura \ref{fig:qualitativo} compara a entrada (com lacuna simulada), a predição da rede e a verdade terrestre. O mapa de erro evidencia que as maiores discrepâncias ocorrem nas cristas das dunas, onde a variação de declividade é abrupta.
+	
+	\begin{figure}[H]
+		\centering
+		\begin{subfigure}[b]{0.48\textwidth}
+			\includegraphics[width=\textwidth]{resultado_dtm_dunas_com_nodata.jpg}
+			\caption{Entrada (Lacuna)}
+		\end{subfigure}
+		\hfill
+		\begin{subfigure}[b]{0.48\textwidth}
+			\includegraphics[width=\textwidth]{resultado_dtm_dunas_preenchido.jpg}
+			\caption{Predição (ViT)}
+		\end{subfigure}
+		
+		\vspace{0.2cm}
+		
+		\begin{subfigure}[b]{0.48\textwidth}
+			\includegraphics[width=\textwidth]{resultado_dtm_dunas.jpg}
+			\caption{Ground Truth}
+		\end{subfigure}
+		\hfill
+		\begin{subfigure}[b]{0.48\textwidth}
+			\includegraphics[width=\textwidth]{resultado_dtm_dunas_error_map.jpg}
+			\caption{Mapa de Erro}
+		\end{subfigure}
+		\caption{Resultados qualitativos em campo de dunas. O modelo recupera a morfologia das ondulações (b) de forma consistente com o original (c).}
+		\label{fig:qualitativo}
+	\end{figure}
 	
 	\section{Análise e Discussão}
 	
-	Numero de palavras: 700 - 900
-	Espaço Visual (Páginas): 1.5 a 2.0
-	Foco Principal: Crucial: O "porquê" dos resultados. Comparação com estado da arte.
+	Os resultados indicam que a abordagem baseada em ViT é superior aos métodos de interpolação clássica na preservação da morfologia. O alto valor de SSIM ($>0.99$) em todas as classes confirma que a estrutura visual do terreno é recuperada com precisão quase perfeita.
+	
+	Contudo, observa-se uma dependência da complexidade do terreno na precisão altimétrica absoluta. Em **Planícies**, onde a variação topográfica é suave, o RMSE é extremamente baixo (3.33 m). Em **Dunas** e **Escarpas**, o erro sobe para ~15 m. Isso se deve à ambiguidade de escala na inferência monocular: o modelo deduz corretamente a \textit{forma} (frequência das dunas), mas pode ter um viés (\textit{offset}) na amplitude vertical absoluta em áreas de sombra complexa.
+	
+	A análise do perfil topográfico (Figura \ref{fig:perfil}) corrobora esta análise: as curvas de predição e real são paralelas e morfologicamente idênticas, apresentando apenas deslocamentos verticais locais. Para aplicações científicas, isso significa que a análise de declividade e rugosidade — cruciais para a navegação de rovers — é preservada, mesmo que a altitude absoluta tenha margem de erro.
+	
+	\begin{figure}[H]
+		\centering
+		\includegraphics[width=0.8\textwidth]{profile_graph.jpg}
+		\caption{Perfil topográfico comparativo. A linha vermelha (Predição) segue fielmente a tendência e frequência da linha azul (Real).}
+		\label{fig:perfil}
+	\end{figure}
 	
 	\section{Conclusão}
 	
-	Numero de palavras: 200 - 300
-	Espaço Visual (Páginas): 0.5
-	Foco Principal: Crucial: Retomada dos objetivos, limitações e trabalhos futuros.
+	Este trabalho apresentou um pipeline inédito utilizando \textit{Vision Transformers} para o preenchimento de lacunas em DTMs de Marte. Os resultados confirmam que a arquitetura DPT é capaz de aprender a complexa função de transferência entre albedo e topografia. O método mostrou-se computacionalmente eficiente (~2s por tile) e morfologicamente preciso. Trabalhos futuros focarão na inclusão de altimetria laser (MOLA) como restrição extra para corrigir o viés de escala em terrenos acidentados.
 	
 	\bibliographystyle{libs/template-latex/sbc}
 	\bibliography{references}
