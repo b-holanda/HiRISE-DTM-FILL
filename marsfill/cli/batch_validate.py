@@ -85,7 +85,7 @@ def run_batch_process(test_dir, output_root_dir, model_path_str, profile="prod")
     logger.info(f"Carregando modelo de IA: {model_path_str}")
     
     try:
-        model_enum = AvailableModels.DPT_LARGE 
+        model_enum = AvailableModels.INTEL_DPT_LARGE 
         evaluator = Evaluator(pretrained_model_name=model_enum, model_path_uri=model_path_str)
         filler = DTMFiller(evaluator=evaluator, padding_size=128, tile_size=512)
         
