@@ -134,8 +134,38 @@ class DTMFiller:
             dtm_path: Caminho do DTM a ser sobrescrito.
             mask_path: Caminho para salvar a máscara de lacunas.
         """
-        orthophoto_dataset = gdal.Open(str(orthophoto_path), gdal.GA_ReadOnly)
         dtm_dataset = gdal.Open(str(dtm_path), gdal.GA_Update)
+        if not dtm_dataset:
+            logger.error("Erro crítico ao abrir DTM.")
+            raise FileNotFoundError("Falha ao abrir DTM.")
+
+        # Reamostra a ortofoto para o grid do DTM, evitando offsets fora do raster
+        ortho_aligned_path = dtm_path.parent / "aligned_ortho.tif"
+        try:
+            dtm_gt = dtm_dataset.GetGeoTransform()
+            dtm_proj = dtm_dataset.GetProjection()
+            width = dtm_dataset.RasterXSize
+            height = dtm_dataset.RasterYSize
+            bounds = [
+                dtm_gt[0],
+                dtm_gt[3] + dtm_gt[5] * height,
+                dtm_gt[0] + dtm_gt[1] * width,
+                dtm_gt[3],
+            ]
+            gdal.Warp(
+                destNameOrDestDS=str(ortho_aligned_path),
+                srcDSOrSrcDSTab=str(orthophoto_path),
+                format="GTiff",
+                outputBounds=bounds,
+                xRes=dtm_gt[1],
+                yRes=abs(dtm_gt[5]),
+                dstSRS=dtm_proj,
+                resampleAlg="cubic",
+            )
+            orthophoto_dataset = gdal.Open(str(ortho_aligned_path), gdal.GA_ReadOnly)
+        except Exception as e:
+            logger.error(f"Falha ao alinhar ortofoto ao DTM: {e}")
+            orthophoto_dataset = gdal.Open(str(orthophoto_path), gdal.GA_ReadOnly)
 
         if not orthophoto_dataset or not dtm_dataset:
             logger.error("Erro crítico ao abrir arquivos GDAL.")
@@ -144,8 +174,8 @@ class DTMFiller:
         ortho_band = orthophoto_dataset.GetRasterBand(1)
         dtm_band = dtm_dataset.GetRasterBand(1)
 
-        width = orthophoto_dataset.RasterXSize
-        height = orthophoto_dataset.RasterYSize
+        width = dtm_dataset.RasterXSize
+        height = dtm_dataset.RasterYSize
 
         no_data_val = dtm_band.GetNoDataValue()
         if no_data_val is None:
@@ -155,8 +185,8 @@ class DTMFiller:
             mask_path,
             width,
             height,
-            orthophoto_dataset.GetGeoTransform(),
-            orthophoto_dataset.GetProjection(),
+            dtm_dataset.GetGeoTransform(),
+            dtm_dataset.GetProjection(),
         )
         mask_band = mask_dataset.GetRasterBand(1)
 
