@@ -31,6 +31,10 @@ class FillerStats:
         array = band.ReadAsArray().astype(np.float32)
         nodata = band.GetNoDataValue()
 
+        # Fallback: alguns arquivos trazem NoData como sentinel sem metadata
+        if nodata is None and np.any(array <= -1e20):
+            nodata = -3.4028234663852886e38
+
         return array, nodata
 
     def calculate_metrics(self, gt_path, filled_path, mask_path=None):
@@ -47,10 +51,12 @@ class FillerStats:
             logger.info("⚠️ Nenhuma máscara fornecida. Avaliando na imagem inteira.")
             hole_mask = np.ones_like(gt_arr, dtype=bool)
 
+        # Considera sentinel extremo como NoData mesmo se nodata vier None
+        sentinel_mask = gt_arr <= -1e20
         if gt_nodata is None:
-            valid_gt_mask = ~np.isnan(gt_arr)
-        else:
-            valid_gt_mask = (gt_arr != gt_nodata) & (~np.isnan(gt_arr))
+            gt_nodata = -3.4028234663852886e38
+
+        valid_gt_mask = (gt_arr != gt_nodata) & (~np.isnan(gt_arr)) & (~sentinel_mask)
         eval_mask = hole_mask & valid_gt_mask
 
         if np.sum(eval_mask) == 0:
@@ -59,10 +65,17 @@ class FillerStats:
         y_true = gt_arr[eval_mask]
         y_pred = filled_arr[eval_mask]
 
+        # Remove qualquer valor infinito/Nan antes das métricas
+        finite_mask = np.isfinite(y_true) & np.isfinite(y_pred)
+        y_true = y_true[finite_mask]
+        y_pred = y_pred[finite_mask]
+        if y_true.size == 0:
+            raise ValueError("Sem pixels válidos para avaliação após remoção de NaN/Inf.")
+
         rmse = np.sqrt(np.mean((y_true - y_pred) ** 2))
         mae = np.mean(np.abs(y_true - y_pred))
 
-        valid_values = gt_arr[valid_gt_mask]
+        valid_values = gt_arr[valid_gt_mask & finite_mask]
         min_val, max_val = float(valid_values.min()), float(valid_values.max())
         scale = max(max_val - min_val, 1.0)
 
