@@ -34,3 +34,4 @@ dependencies:
       - nvidia-ml-py
       - bs4
       - requests
+      - tabulate

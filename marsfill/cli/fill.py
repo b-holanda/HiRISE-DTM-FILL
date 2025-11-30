@@ -6,8 +6,6 @@ from marsfill.model.eval import Evaluator
 from marsfill.model.train import AvailableModels
 from marsfill.utils import Logger
 from marsfill.fill.filler_stats import FillerStats
-# Se o arquivo filler_stats.py estiver em marsfill/fill/, use:
-# from marsfill.fill.filler_stats import FillerStats
 
 logger = Logger()
 
@@ -37,13 +35,10 @@ def main():
         sys.exit(1)
 
     try:
-        # Inicialização
-        # Nota: Ajuste AvailableModels.DPT_LARGE conforme sua enumeração real em train.py
         evaluator = Evaluator(pretrained_model_name=AvailableModels.INTEL_DPT_LARGE, model_path_uri=str(model_path))
         
         filler = DTMFiller(evaluator=evaluator, padding_size=128, tile_size=512)
-        
-        # Execução
+
         final_dtm, final_mask, _, _, _ = filler.fill(
             dtm_path=dtm_path,
             ortho_path=ortho_path,
@@ -62,12 +57,11 @@ def main():
         
         if metrics['evaluated_pixels'] > 0:
             logger.info(f"RMSE: {metrics['rmse_m']:.4f} m | SSIM: {metrics['ssim']:.4f}")
-            
-            # --- NOVA CHAMADA PARA GERAR TODOS OS ARQUIVOS ---
+ 
             stats.generate_all_outputs(
                 gt_path=gt_path,
-                input_path=dtm_path,   # Passa o DTM com buracos
-                ortho_path=ortho_path, # Passa a Ortoimagem
+                input_path=dtm_path,
+                ortho_path=ortho_path,
                 filled_path=final_dtm,
                 mask_path=final_mask,
                 metrics=metrics

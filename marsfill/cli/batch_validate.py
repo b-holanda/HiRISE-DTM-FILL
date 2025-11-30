@@ -2,57 +2,56 @@ import os
 import sys
 import json
 import argparse
-import subprocess
-import numpy as np
+import gc
+import torch
 from pathlib import Path
-from datetime import datetime
+from tqdm import tqdm
+import numpy as np
 
-# Tenta importar tabulate para tabelas bonitas (opcional)
-try:
-    from tabulate import tabulate
-    HAS_TABULATE = True
-except ImportError:
-    HAS_TABULATE = False
+from marsfill.fill.dtm_filler import DTMFiller
+from marsfill.model.eval import Evaluator
+from marsfill.model.train import AvailableModels
+from marsfill.utils import Logger
+
+from marsfill.fill.filler_stats import FillerStats
+
+from tabulate import tabulate
+
+logger = Logger()
 
 def find_dataset_pairs(root_dir):
-    """
-    Encontra trios: (Input com NoData, Ortho, Ground Truth)
-    baseado na convenção de nomes do HiRISE.
-    """
+    """Encontra os pares de arquivos (Input, Ortho, GT)."""
     cases = []
     root = Path(root_dir)
-    
-    # Encontra todos os arquivos de input (com buracos)
+    # Procura recursivamente pelos arquivos com nodata
     inputs = list(root.rglob("*_with_nodata.tif"))
     
     if not inputs:
-        print(f"❌ Nenhum arquivo '*_with_nodata.tif' encontrado em {root_dir}")
+        logger.error(f"Nenhum arquivo '*_with_nodata.tif' encontrado em {root_dir}")
         return []
 
-    print(f"🔍 Encontrados {len(inputs)} arquivos de input. Buscando pares correspondentes...")
+    logger.info(f"Encontrados {len(inputs)} arquivos de input. Buscando pares...")
 
     for input_path in inputs:
         folder = input_path.parent
         base_name = input_path.name.replace("_with_nodata.tif", "")
         
-        # 1. Tenta achar o Ground Truth (Original sem _with_nodata)
+        # Busca Ground Truth
         gt_candidates = [
             folder / (base_name + ".IMG"),
             folder / (base_name + ".tif"),
             folder / (base_name + ".GTiff")
         ]
-        # Pega o primeiro que existir
         gt_path = next((p for p in gt_candidates if p.exists()), None)
         
-        # 2. Tenta achar a Ortoimagem (Baseado no Orbit ID)
-        # Ex: DTEPC_088676_2540 -> ID: 088676_2540 -> Busca ESP_088676_2540...
+        # Busca Ortoimagem via ID de órbita
         orbit_id_parts = base_name.split('_')[1:3]
         if len(orbit_id_parts) >= 2:
             orbit_key = f"{orbit_id_parts[0]}_{orbit_id_parts[1]}"
-            # Procura JP2 ou TIF que contenha o ID mas não seja DTEPC
             ortho_candidates = list(folder.glob(f"*{orbit_key}*.JP2")) + \
                                list(folder.glob(f"*{orbit_key}*.tif"))
             
+            # Filtra para não pegar o próprio DTM
             ortho_path = next((p for p in ortho_candidates 
                                if "DTEPC" not in p.name and "with_nodata" not in p.name), None)
         else:
@@ -66,70 +65,103 @@ def find_dataset_pairs(root_dir):
                 "ortho": ortho_path,
                 "folder": folder.name
             })
+        else:
+            # logger.warning(f"Skipping {base_name}: Falta GT ou Ortho.")
+            pass
 
     return cases
 
-def run_batch(test_dir, output_root_dir, profile="prod"):
-    # Verifica se o script shell existe
-    fill_script = Path("fill.sh").resolve()
-    if not fill_script.exists():
-        print("❌ Erro: 'fill.sh' não encontrado na raiz do diretório atual.")
-        sys.exit(1)
-
-    # Busca os casos
+def run_batch_process(test_dir, output_root_dir, model_path_str, profile="prod"):
     cases = find_dataset_pairs(test_dir)
     if not cases:
-        print("Nenhum caso completo encontrado.")
+        return
+
+    logger.info(f"Carregando modelo de IA: {model_path_str}")
+    
+    try:
+        # Carrega o modelo UMA ÚNICA VEZ na memória
+        # Certifique-se de que AvailableModels.DPT_LARGE corresponde ao seu enum em train.py
+        model_enum = AvailableModels.DPT_LARGE 
+        evaluator = Evaluator(pretrained_model_name=model_enum, model_path_uri=model_path_str)
+        
+        # Instancia o Filler (reutilizável)
+        # Ajuste padding/tile conforme seu perfil prod/test se desejar
+        filler = DTMFiller(evaluator=evaluator, padding_size=128, tile_size=512)
+        
+    except Exception as e:
+        logger.error(f"Erro fatal ao carregar modelo: {e}")
         return
 
     results = []
+    logger.info(f"Iniciando processamento em lote de {len(cases)} cenas...")
     
-    print(f"\n🚀 Iniciando processamento em lote de {len(cases)} casos usando ./fill.sh\n")
+    pbar = tqdm(cases, desc="Progresso Global", unit="cena")
 
-    for i, case in enumerate(cases):
-        print(f"[{i+1}/{len(cases)}] Processando: {case['id']} ({case['folder']})")
+    for case in pbar:
+        pbar.set_description(f"Processando {case['id'][:15]}")
         
-        # Cria pasta de saída específica para este caso
         case_out_dir = Path(output_root_dir) / case['folder'] / case['id']
         case_out_dir.mkdir(parents=True, exist_ok=True)
         
-        # Constrói o comando chamando o script bash
-        cmd = [
-            str(fill_script),
-            "--profile", profile,
-            "--dtm", str(case['input']),
-            "--ortho", str(case['ortho']),
-            "--gt", str(case['gt']),
-            "--out_dir", str(case_out_dir)
-        ]
-        
         try:
-            # Executa e aguarda terminar
-            result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+            # 1. Preenchimento (Inpainting)
+            final_dtm, final_mask, _, _, _ = filler.fill(
+                dtm_path=case['input'],
+                ortho_path=case['ortho'],
+                output_root=str(case_out_dir)
+            )
             
-            # Verifica se o JSON de métricas foi gerado
-            metrics_file = case_out_dir / "metrics.json"
-            if metrics_file.exists():
-                with open(metrics_file, 'r') as f:
-                    data = json.load(f)
-                    data['id'] = case['id']
-                    data['type'] = case['folder'] 
-                    results.append(data)
-                    print(f"   ✅ Sucesso! RMSE: {data.get('rmse_m', 0):.2f}m | SSIM: {data.get('ssim', 0):.4f}")
+            # 2. Cálculo de Métricas e Gráficos
+            stats = FillerStats(output_dir=case_out_dir)
+            metrics, gt_arr, filled_arr, mask_arr = stats.calculate_metrics(
+                gt_path=case['gt'],
+                filled_path=final_dtm,
+                mask_path=final_mask
+            )
+            
+            if metrics['evaluated_pixels'] > 0:
+                # Gera os 6 gráficos/imagens separados
+                stats.generate_all_outputs(
+                    gt_path=case['gt'],
+                    input_path=case['input'],
+                    ortho_path=case['ortho'],
+                    filled_path=final_dtm,
+                    mask_path=final_mask,
+                    metrics=metrics
+                )
+                
+                # Salva resultado na lista para o relatório final
+                res_data = metrics.copy()
+                res_data['id'] = case['id']
+                res_data['type'] = case['folder']
+                results.append(res_data)
             else:
-                print("   ⚠️  Executou, mas metrics.json não encontrado.")
-                # Opcional: imprimir stderr se falhar silenciosamente
-                # print(result.stderr)
+                pass 
+                # tqdm.write(f"Aviso: {case['id']} - Validação ignorada (sem pixels).")
 
-        except subprocess.CalledProcessError as e:
-            print(f"   ❌ Falha na execução do fill.sh.")
-            # Mostra o erro real do script shell se falhar
-            print(f"   Erro: {e.stderr.strip()[-300:]}") # Mostra os últimos 300 chars do erro
+        except Exception as e:
+            tqdm.write(f"Erro em {case['id']}: {e}")
+            # import traceback
+            # traceback.print_exc()
 
-    # --- Geração do Relatório ---
+        finally:
+            # --- OTIMIZAÇÃO DE MEMÓRIA ---
+            # Remove referências a arrays grandes da memória
+            if 'gt_arr' in locals(): del gt_arr
+            if 'filled_arr' in locals(): del filled_arr
+            if 'mask_arr' in locals(): del mask_arr
+            
+            # Força o Garbage Collector do Python
+            gc.collect()
+            
+            # Limpa VRAM da GPU se estiver usando CUDA
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+    # --- Relatório Final ---
     if results:
         print("\n" + "="*65)
-        print("📊 RELATÓRIO FINAL DE VALIDAÇÃO (BATCH)")
+        print("📊 RELATÓRIO FINAL DE VALIDAÇÃO")
         print("="*65)
         
         table_data = []
@@ -144,21 +176,15 @@ def run_batch(test_dir, output_root_dir, profile="prod"):
             
             table_data.append([
                 r['type'], 
-                r['id'][:25], # Trunca nome longo
+                r['id'][:25], 
                 f"{r.get('rmse_m', 0):.2f}", 
-                f"{r.get('ssim', 0):.4f}",
+                f"{r.get('ssim', 0):.4f}", 
                 f"{r.get('execution_time_s', 0):.2f}s"
             ])
 
         headers = ["Tipo", "ID", "RMSE (m)", "SSIM", "Tempo"]
         
-        if HAS_TABULATE:
-            print(tabulate(table_data, headers=headers, tablefmt="github"))
-        else:
-            # Fallback simples
-            print(f"{'Tipo':<10} {'ID':<30} {'RMSE':<10} {'SSIM':<10}")
-            for row in table_data:
-                print(f"{row[0]:<10} {row[1]:<30} {row[2]:<10} {row[3]:<10}")
+        print(tabulate(table_data, headers=headers, tablefmt="github"))
 
         print("-" * 65)
         print(f"MÉDIA GLOBAL ({len(results)} amostras):")
@@ -169,18 +195,28 @@ def run_batch(test_dir, output_root_dir, profile="prod"):
         
         # Salva CSV
         import csv
-        csv_path = Path(output_root_dir) / "batch_summary.csv"
-        with open(csv_path, 'w', newline='') as csvfile:
-            writer = csv.writer(csvfile)
+        csv_path = Path(output_root_dir) / "batch_summary_optimized.csv"
+        with open(csv_path, 'w', newline='') as f:
+            writer = csv.writer(f)
             writer.writerow(headers)
             writer.writerows(table_data)
         print(f"📂 CSV salvo em: {csv_path}")
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    # Caminho onde estão as pastas 'dunes', 'craters', etc.
+def main():
+    parser = argparse.ArgumentParser(description="Batch Validation Tool (Optimized)")
     parser.add_argument("--test_dir", default="data/dataset/v1/test", help="Diretório de testes")
     parser.add_argument("--out_dir", default="data/filled_batch_results", help="Saída dos resultados")
+    parser.add_argument("--model", default="data/models/marsfill_model.pth", help="Caminho do modelo .pth")
+    parser.add_argument("--profile", default="prod", help="Perfil de execução")
+    
     args = parser.parse_args()
     
-    run_batch(args.test_dir, args.out_dir)
+    # Valida caminhos
+    if not Path(args.model).exists():
+        logger.error(f"Modelo não encontrado em: {args.model}")
+        sys.exit(1)
+        
+    run_batch_process(args.test_dir, args.out_dir, args.model, args.profile)
+
+if __name__ == "__main__":
+    main()
