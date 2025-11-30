@@ -80,13 +80,12 @@ class DTMFiller:
         if not dtm_dataset:
             raise FileNotFoundError("Falha ao abrir DTM.")
 
-        # Alinhamento (Gera uma versão temporária da ortoimagem alinhada ao DTM)
+        # Alinhamento
         ortho_aligned_path = dtm_path.parent / "aligned_ortho_temp.tif"
         orthophoto_dataset = self._align_rasters(dtm_dataset, orthophoto_path, ortho_aligned_path)
 
         ortho_band = orthophoto_dataset.GetRasterBand(1)
-        
-        # --- CORREÇÃO AQUI: Chamar GetMaskBand na BANDA, não no Dataset ---
+        # Pega a banda de máscara (Alpha) que foi gerada pelo Warp
         ortho_mask_band = ortho_band.GetMaskBand() 
 
         dtm_band = dtm_dataset.GetRasterBand(1)
@@ -96,11 +95,9 @@ class DTMFiller:
         
         no_data_val = dtm_band.GetNoDataValue()
 
-        # Estatísticas Globais para Fallback
         logger.info("Calculando estatísticas globais do DTM para calibração...")
         stats = dtm_band.GetStatistics(0, 1) 
         global_min, global_max, global_mean, global_std = stats
-        # logger.info(f"Stats Globais -> Média: {global_mean:.2f}, Std: {global_std:.2f}")
 
         mask_dataset = self._create_mask_dataset(
             mask_path, width, height, dtm_dataset.GetGeoTransform(), dtm_dataset.GetProjection()
@@ -131,6 +128,10 @@ class DTMFiller:
             except: pass
 
     def _align_rasters(self, dtm_ds, ortho_path, output_path):
+        """
+        Reamostra ortofoto para bater pixel-a-pixel com DTM.
+        Define srcNodata=0 para que bordas pretas se tornem transparentes.
+        """
         dtm_gt = dtm_ds.GetGeoTransform()
         dtm_proj = dtm_ds.GetProjection()
         width = dtm_ds.RasterXSize
@@ -138,7 +139,6 @@ class DTMFiller:
         bounds = [dtm_gt[0], dtm_gt[3] + dtm_gt[5] * height, dtm_gt[0] + dtm_gt[1] * width, dtm_gt[3]]
         
         try:
-            # dstAlpha=True cria canal alfa para transparência nas bordas
             gdal.Warp(
                 destNameOrDestDS=str(output_path),
                 srcDSOrSrcDSTab=str(ortho_path),
@@ -146,7 +146,9 @@ class DTMFiller:
                 outputBounds=bounds,
                 xRes=dtm_gt[1], yRes=abs(dtm_gt[5]),
                 dstSRS=dtm_proj, resampleAlg="cubic",
-                dstAlpha=True 
+                # CORREÇÃO CRÍTICA AQUI:
+                srcNodata=0,  # Diz que preto (0) na entrada é NoData
+                dstAlpha=True # Cria canal alfa na saída onde srcNodata=0
             )
             return gdal.Open(str(output_path), gdal.GA_ReadOnly)
         except Exception as e:
@@ -159,8 +161,10 @@ class DTMFiller:
         w_tile = min(self.processing_tile_size, total_w - x)
         h_tile = min(self.processing_tile_size, total_h - y)
 
-        # Verifica se a ortoimagem é válida nesta área (não é borda preta)
+        # Verifica máscara de validade da ortoimagem (Alpha)
         ortho_mask_data = ortho_mask_band.ReadAsArray(x, y, w_tile, h_tile)
+        
+        # Se todo o tile for transparente (borda preta), pula imediatamente
         if not np.any(ortho_mask_data):
             return False
 
@@ -175,7 +179,8 @@ class DTMFiller:
         else:
             is_nodata = (dtm_data < -1e30)
 
-        # Missing = Onde DTM é falha E onde a Ortoimagem é válida
+        # Só preenche se: DTM é falha (True) E Ortoimagem é válida (True)
+        # Onde a Ortoimagem for borda preta (ortho_mask_data == 0), ortho_is_valid será False
         ortho_is_valid = (ortho_mask_data > 0)
         missing_mask = (is_nodata | is_nan) & ortho_is_valid
 
@@ -235,7 +240,6 @@ class DTMFiller:
         shift = mu_ref - (mu_p * scale)
         out = pred_tile * scale + shift
         
-        # Limita valores extremos
         lower_bound = mu_ref - 5 * std_ref
         upper_bound = mu_ref + 5 * std_ref
         out = np.clip(out, lower_bound, upper_bound)
