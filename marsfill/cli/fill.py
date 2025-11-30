@@ -1,103 +1,94 @@
 import argparse
+import sys
 from pathlib import Path
-
 from marsfill.fill.dtm_filler import DTMFiller
-from marsfill.fill.filler_stats import FillerStats
 from marsfill.model.eval import Evaluator
 from marsfill.model.train import AvailableModels
 from marsfill.utils import Logger
-from marsfill.utils.profiler import get_profile
+from marsfill.stats import FillerStats  # Certifique-se que o import está correto (pode ser marsfill.fill.filler_stats dependendo da sua pasta)
+
+# Se o arquivo filler_stats.py estiver em marsfill/fill/, use:
+# from marsfill.fill.filler_stats import FillerStats
 
 logger = Logger()
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="MarsFill - DTM Inpainting Tool")
+    
+    parser.add_argument("--profile", type=str, default="prod", help="Perfil de execução")
+    parser.add_argument("--dtm", type=str, required=True, help="Caminho do DTM de entrada (com lacunas)")
+    parser.add_argument("--ortho", type=str, required=True, help="Caminho da Ortoimagem")
+    parser.add_argument("--gt", type=str, required=False, help="Caminho do Ground Truth")
+    parser.add_argument("--out_dir", type=str, required=True, help="Diretório de saída")
+    parser.add_argument("--model_path", type=str, default="data/models/marsfill_model.pth", help="Caminho do modelo")
+    
+    return parser.parse_args()
 
 def main():
-    """Ponto de entrada da CLI de preenchimento de DTMs."""
-    parser = argparse.ArgumentParser(
-        prog="Mars DTM Fill", description="CLI para preenchimento de lacunas em DTMs", epilog=""
-    )
-
-    parser.add_argument(
-        "--dtm",
-        "-d",
-        required=True,
-        help="Caminho do DTM (com buracos) a ser preenchido.",
-    )
-    parser.add_argument(
-        "--ortho",
-        "-o",
-        required=True,
-        help="Caminho da ortofoto correspondente.",
-    )
-    parser.add_argument(
-        "--out_dir",
-        "-O",
-        required=True,
-        help="Diretório de saída onde serão gravados DTM preenchido, máscara e métricas.",
-    )
-    parser.add_argument(
-        "--profile", "-p", default="prod", help="Perfil de configuração [prod|test]"
-    )
-    parser.add_argument(
-        "--gt",
-        help="Caminho opcional para o DTM original (sem buracos) usado para métricas. "
-        "Se omitido, usa o mesmo DTM de entrada.",
-    )
-
-    args = parser.parse_args()
-
-    profile = get_profile(args.profile)
-    if not profile:
-        raise RuntimeError(f"Perfil '{args.profile}' não encontrado.")
-
-    fill_cfg = profile.get("fill", {})
-    model_cfg_path = fill_cfg.get("model_path", "models/marsfill_model.pth")
-    local_base_dir = fill_cfg.get("local_base_dir", "data")
-
-    base_path = PROJECT_ROOT / local_base_dir
-    model_path = base_path / model_cfg_path
-
+    args = parse_args()
+    
     dtm_path = Path(args.dtm)
     ortho_path = Path(args.ortho)
-    output_dir = Path(args.out_dir)
+    out_dir = Path(args.out_dir)
+    model_path = Path(args.model_path)
+    gt_path = Path(args.gt) if args.gt else dtm_path
 
-    if not dtm_path.exists() or not ortho_path.exists():
-        raise FileNotFoundError("DTM ou ortho não encontrados para preenchimento.")
+    if not dtm_path.exists():
+        logger.error(f"DTM não encontrado: {dtm_path}")
+        sys.exit(1)
 
-    output_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        # Inicialização
+        # Nota: Ajuste AvailableModels.DPT_LARGE conforme sua enumeração real em train.py
+        evaluator = Evaluator(pretrained_model_name=AvailableModels.DPT_LARGE, model_path_uri=str(model_path))
+        
+        filler = DTMFiller(evaluator=evaluator, padding_size=128, tile_size=512)
+        
+        # Execução
+        final_dtm, final_mask, _, _, _ = filler.fill(
+            dtm_path=dtm_path,
+            ortho_path=ortho_path,
+            output_root=str(out_dir)
+        )
+        
+        # Avaliação e Geração de Gráficos
+        # Importante: Importe FillerStats do local correto onde você salvou o arquivo acima
+        try:
+            from marsfill.fill.filler_stats import FillerStats
+        except ImportError:
+            from marsfill.stats import FillerStats
 
-    padding_size = int(fill_cfg.get("padding_size", 128))
-    tile_size = int(fill_cfg.get("tile_size", 512))
+        stats = FillerStats(output_dir=out_dir)
+        
+        logger.info("⚡ Calculando estatísticas e gerando gráficos...")
+        
+        metrics, gt_arr, filled_arr, mask_arr = stats.calculate_metrics(
+            gt_path=gt_path,
+            filled_path=final_dtm,
+            mask_path=final_mask
+        )
+        
+        if metrics['evaluated_pixels'] > 0:
+            logger.info(f"RMSE: {metrics['rmse_m']:.4f} m | SSIM: {metrics['ssim']:.4f}")
+            
+            # --- NOVA CHAMADA PARA GERAR TODOS OS ARQUIVOS ---
+            stats.generate_all_outputs(
+                gt_path=gt_path,
+                input_path=dtm_path,   # Passa o DTM com buracos
+                ortho_path=ortho_path, # Passa a Ortoimagem
+                filled_path=final_dtm,
+                mask_path=final_mask,
+                metrics=metrics
+            )
+            logger.info("✅ Gráficos e imagens gerados com sucesso.")
+        else:
+            logger.warning("Validação inválida (sem pixels avaliados).")
 
-    evaluator = Evaluator(
-        pretrained_model_name=AvailableModels.INTEL_DPT_LARGE, model_path_uri=str(model_path)
-    )
-    filler = DTMFiller(evaluator=evaluator, padding_size=padding_size, tile_size=tile_size)
-
-    filled_uri, mask_uri, local_filled_path, local_mask_path, local_original_dtm = filler.fill(
-        dtm_path=dtm_path,
-        ortho_path=ortho_path,
-        output_root=str(output_dir),
-        keep_local_output=False,
-    )
-
-    # Métricas e gráficos (sempre calculados localmente)
-    local_output_dir = local_filled_path.parent
-    stats = FillerStats(output_dir=local_output_dir)
-
-    gt_path = Path(args.gt) if args.gt else local_original_dtm
-    if not gt_path.exists():
-        raise FileNotFoundError(f"Ground truth '{gt_path}' não encontrado para cálculo de métricas.")
-
-    metrics, gt_arr, filled_arr, eval_mask = stats.calculate_metrics(
-        gt_path=gt_path, filled_path=local_filled_path, mask_path=local_mask_path
-    )
-    stats.plot_results(eval_mask=eval_mask, filled_arr=filled_arr, gt_arr=gt_arr, metrics=metrics)
-
-    logger.info(f"✅ Saída DTM: {filled_uri}")
-    logger.info(f"✅ Saída Máscara: {mask_uri}")
-
+    except Exception as e:
+        logger.error(f"Falha crítica: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()

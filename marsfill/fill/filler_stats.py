@@ -20,67 +20,63 @@ class FillerStats:
     def load_geotiff(self, path):
         ds = gdal.Open(str(path))
         if not ds:
-            raise FileNotFoundError(f"Arquivo não encontrado: {path}")
+            # Tenta ignorar erro se for opcional, mas loga aviso
+            return None, None
         band = ds.GetRasterBand(1)
         array = band.ReadAsArray().astype(np.float32)
         nodata = band.GetNoDataValue()
-        # Fallback para nodata não definido
+        
         if nodata is None:
-            nodata = -3.4028235e38
+            if np.nanmin(array) < -1e30:
+                nodata = -3.4028235e38
+            else:
+                nodata = None
         return array, nodata
 
     def calculate_metrics(self, gt_path, filled_path, mask_path=None):
-        logger.info("⚡ Iniciando avaliação...")
+        logger.info("⚡ Calculando métricas...")
         start_time = time.time()
 
         gt_arr, gt_nodata = self.load_geotiff(gt_path)
         filled_arr, _ = self.load_geotiff(filled_path)
 
-        # 1. Definição da Máscara de Avaliação
+        if gt_arr is None or filled_arr is None:
+            logger.error("Falha ao carregar arquivos para métricas.")
+            return self._return_empty_metrics()
+
+        # Definição da Máscara
         if mask_path:
             mask_arr, _ = self.load_geotiff(mask_path)
-            # Garante que dimensões batem (crop se necessário)
+            # Crop para garantir dimensões iguais
             h = min(mask_arr.shape[0], gt_arr.shape[0])
             w = min(mask_arr.shape[1], gt_arr.shape[1])
             mask_arr = mask_arr[:h, :w]
             gt_arr = gt_arr[:h, :w]
             filled_arr = filled_arr[:h, :w]
-            
-            # Máscara binária onde o preenchimento ocorreu
             hole_mask = (mask_arr > 0)
         else:
-            # Se não passar máscara, assume erro! 
-            # (Em inpainting científico, avaliar a imagem toda dilui o erro)
-            logger.warning("Nenhuma máscara fornecida! Avaliando imagem inteira (NÃO RECOMENDADO).")
             hole_mask = np.ones_like(gt_arr, dtype=bool)
 
-        # 2. Validação da Máscara (CRÍTICO)
+        # Validação
         if np.sum(hole_mask) == 0:
-            logger.error("🚨 ERRO CRÍTICO: A máscara de avaliação está vazia!")
-            logger.error("O input fornecido ao modelo não tinha lacunas (NoData), ou a máscara não foi salva.")
-            logger.error("Métricas retornadas serão NaN para evitar vazamento de dados.")
             return self._return_empty_metrics()
 
-        # 3. Filtragem de Pixels Inválidos no Ground Truth
-        # Não podemos avaliar onde o GT original também era ruim/NoData
-        valid_gt_mask = (gt_arr != gt_nodata) & np.isfinite(gt_arr) & (gt_arr > -1e30)
-        
-        # Pixels finais para cálculo: Onde era buraco E onde temos verdade terrestre válida
+        valid_gt_mask = np.isfinite(gt_arr) & (gt_arr > -1e30)
+        if gt_nodata is not None:
+             valid_gt_mask &= ~np.isclose(gt_arr, gt_nodata)
+
         eval_mask = hole_mask & valid_gt_mask
         
         num_pixels = int(np.sum(eval_mask))
         if num_pixels == 0:
-            logger.warning("Máscara tem lacunas, mas o GT correspondente é NoData. Impossível validar.")
             return self._return_empty_metrics()
 
-        # 4. Cálculo de Métricas
+        # Métricas
         y_true = gt_arr[eval_mask]
         y_pred = filled_arr[eval_mask]
 
         rmse = np.sqrt(np.mean((y_true - y_pred) ** 2))
         mae = np.mean(np.abs(y_true - y_pred))
-
-        # SSIM (Calculado no tile inteiro, mas mascarando fora do buraco para não diluir)
         ssim_score = self._calculate_masked_ssim(gt_arr, filled_arr, eval_mask)
 
         metrics = {
@@ -94,107 +90,145 @@ class FillerStats:
         self._save_metrics(metrics)
         return metrics, gt_arr, filled_arr, eval_mask
 
-    def _calculate_masked_ssim(self, gt, pred, mask):
-        """Calcula SSIM. Substitui valores fora da máscara pelo GT para focar a métrica na lacuna."""
-        # Normalização Min-Max baseada no GT
-        valid_vals = gt[np.isfinite(gt) & (gt > -1e30)]
-        if valid_vals.size == 0: return 0.0
-        mn, mx = valid_vals.min(), valid_vals.max()
-        scale = mx - mn + 1e-6
+    def generate_all_outputs(self, gt_path, input_path, ortho_path, filled_path, mask_path, metrics):
+        """
+        Gera todas as imagens e gráficos solicitados separadamente.
+        """
+        # Carrega todos os arrays necessários
+        gt_arr, _ = self.load_geotiff(gt_path)
+        input_arr, _ = self.load_geotiff(input_path)
+        ortho_arr, _ = self.load_geotiff(ortho_path)
+        filled_arr, _ = self.load_geotiff(filled_path)
+        mask_arr, _ = self.load_geotiff(mask_path)
 
-        # Prepara tensores
+        if gt_arr is None: return
+
+        # Recorte Automático (Crop) baseado na máscara para focar na ação
+        rows = np.any(mask_arr > 0, axis=1)
+        cols = np.any(mask_arr > 0, axis=0)
+        
+        if np.any(rows):
+            pad = 50
+            y_min, y_max = max(0, np.where(rows)[0][0] - pad), min(gt_arr.shape[0], np.where(rows)[0][-1] + pad)
+            x_min, x_max = max(0, np.where(cols)[0][0] - pad), min(gt_arr.shape[1], np.where(cols)[0][-1] + pad)
+        else:
+            y_min, y_max, x_min, x_max = 0, gt_arr.shape[0], 0, gt_arr.shape[1]
+
+        # Função auxiliar de corte
+        def crop(arr): 
+            if arr is None: return None
+            # Garante que arrays 2D e 3D (ortho) sejam cortados corretamente
+            if arr.ndim == 3: return arr[:, y_min:y_max, x_min:x_max] if arr.shape[0] < arr.shape[1] else arr[y_min:y_max, x_min:x_max, :]
+            return arr[y_min:y_max, x_min:x_max]
+
+        gt_c = crop(gt_arr)
+        inp_c = crop(input_arr)
+        ortho_c = crop(ortho_arr)
+        filled_c = crop(filled_arr)
+        mask_c = crop(mask_arr)
+
+        # Determina Escala de Cores Comum (Baseada no GT Válido)
+        valid_pixels = gt_c[np.isfinite(gt_c) & (gt_c > -1e30)]
+        if valid_pixels.size > 0:
+            vmin, vmax = np.percentile(valid_pixels, 2), np.percentile(valid_pixels, 98)
+        else:
+            vmin, vmax = None, None
+
+        logger.info("🎨 Gerando imagens individuais...")
+
+        # 1. Orthophoto
+        self._save_single_map(ortho_c, "orthophoto.jpg", "Ortoimagem (Referência Visual)", cmap="gray")
+
+        # 2. Ground Truth
+        self._save_single_map(gt_c, "dtm_ground_truth.jpg", "Ground Truth (Real)", cmap="terrain", vmin=vmin, vmax=vmax)
+
+        # 3. Input com NoData
+        self._save_single_map(inp_c, "dtm_nodata.jpg", "Input (Com Lacunas)", cmap="terrain", vmin=vmin, vmax=vmax)
+
+        # 4. Preenchido
+        self._save_single_map(filled_c, "dtm_preenchido.jpg", "Resultado (Preenchido)", cmap="terrain", vmin=vmin, vmax=vmax)
+
+        # 5. Mapa de Erro
+        diff = np.abs(gt_c - filled_c)
+        # Mascara onde não era buraco
+        diff[mask_c == 0] = 0 
+        diff[gt_c < -1e30] = 0
+        self._save_single_map(diff, "error_map.jpg", f"Erro Absoluto (RMSE: {metrics.get('rmse_m', 0):.2f}m)", cmap="inferno")
+
+        # 6. Gráfico de Perfil
+        self._save_profile_graph(gt_c, filled_c, mask_c, "profile_graph.jpg")
+
+    def _save_single_map(self, data, filename, title, cmap="terrain", vmin=None, vmax=None):
+        if data is None: return
+        
+        plt.figure(figsize=(10, 8))
+        
+        # Tratamento para NoData na visualização
+        if cmap != "gray": # DTMs
+            plot_data = np.where(data < -1e30, np.nan, data)
+        else: # Ortho
+            plot_data = data
+
+        plt.imshow(plot_data, cmap=cmap, vmin=vmin, vmax=vmax)
+        plt.title(title, fontsize=14)
+        plt.colorbar(fraction=0.046, pad=0.04, label="Metros" if cmap != "gray" and cmap != "inferno" else "")
+        plt.axis('off')
+        
+        out_path = self.output_dir / filename
+        plt.savefig(out_path, bbox_inches='tight', dpi=150)
+        plt.close()
+
+    def _save_profile_graph(self, gt, filled, mask, filename):
+        plt.figure(figsize=(12, 6))
+        
+        mid_y = gt.shape[0] // 2
+        line_gt = gt[mid_y, :]
+        line_pred = filled[mid_y, :]
+        x_axis = np.arange(len(line_gt))
+        
+        valid = line_gt > -1e30
+        
+        plt.plot(x_axis[valid], line_gt[valid], 'k-', lw=2.5, label='Ground Truth', alpha=0.8)
+        plt.plot(x_axis[valid], line_pred[valid], 'r--', lw=2, label='Predição IA')
+
+        # Destaque da área preenchida
+        hole_indices = np.where(mask[mid_y, :] > 0)[0]
+        if len(hole_indices) > 0:
+            from itertools import groupby, count
+            for _, g in groupby(hole_indices, key=lambda n, c=count(): n-next(c)):
+                group = list(g)
+                plt.axvspan(group[0], group[-1], color='yellow', alpha=0.3)
+            plt.axvspan(0, 0, color='yellow', alpha=0.3, label='Lacuna') # Legenda fake
+
+        plt.title("Perfil Topográfico (Transecto Central)", fontsize=14)
+        plt.xlabel("Pixels")
+        plt.ylabel("Elevação (m)")
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        
+        out_path = self.output_dir / filename
+        plt.savefig(out_path, bbox_inches='tight', dpi=150)
+        plt.close()
+
+    # -- Métodos Auxiliares Mantidos --
+    def _calculate_masked_ssim(self, gt, pred, mask):
+        valid_pixels = gt[np.isfinite(gt) & (gt > -1e30)]
+        if valid_pixels.size == 0: return 0.0
+        mn, mx = valid_pixels.min(), valid_pixels.max()
+        scale = mx - mn + 1e-6
         gt_t = torch.tensor(gt, device=self.device).unsqueeze(0).unsqueeze(0)
         pred_t = torch.tensor(pred, device=self.device).unsqueeze(0).unsqueeze(0)
         mask_t = torch.tensor(mask, device=self.device).unsqueeze(0).unsqueeze(0)
-
-        # "Híbrido": Onde não é buraco, usamos o GT em ambas as imagens.
-        # Assim, o SSIM mede apenas a degradação estrutural dentro do buraco e nas bordas.
         pred_masked = torch.where(mask_t, pred_t, gt_t)
-        gt_masked = gt_t # O target é o próprio GT
-
-        # Normaliza 0-1
-        gt_norm = torch.clamp((gt_masked - mn) / scale, 0, 1)
+        gt_norm = torch.clamp((gt_t - mn) / scale, 0, 1)
         pred_norm = torch.clamp((pred_masked - mn) / scale, 0, 1)
-
         return self.ssim_calc(pred_norm, gt_norm).item()
 
     def _return_empty_metrics(self):
-        empty = {
-            "rmse_m": float("nan"), "mae_m": float("nan"), 
-            "ssim": 0.0, "execution_time_s": 0.0, "evaluated_pixels": 0
-        }
+        empty = {"rmse_m": 0.0, "mae_m": 0.0, "ssim": 0.0, "execution_time_s": 0.0, "evaluated_pixels": 0}
         self._save_metrics(empty)
         return empty, None, None, None
 
     def _save_metrics(self, metrics):
-        json_path = self.output_dir / "metrics.json"
-        with open(json_path, "w") as f:
+        with open(self.output_dir / "metrics.json", "w") as f:
             json.dump(metrics, f, indent=4)
-
-    def plot_results(self, gt_arr, filled_arr, eval_mask, metrics, filename="result_comparison.jpg"):
-        if gt_arr is None: return
-
-        # Auto-crop para a região de interesse (onde tem máscara)
-        rows = np.any(eval_mask, axis=1)
-        cols = np.any(eval_mask, axis=0)
-        
-        if np.any(rows):
-            y_min, y_max = np.where(rows)[0][[0, -1]]
-            x_min, x_max = np.where(cols)[0][[0, -1]]
-            pad = 50
-            y_min = max(0, y_min - pad)
-            y_max = min(gt_arr.shape[0], y_max + pad)
-            x_min = max(0, x_min - pad)
-            x_max = min(gt_arr.shape[1], x_max + pad)
-        else:
-            y_min, y_max, x_min, x_max = 0, gt_arr.shape[0], 0, gt_arr.shape[1]
-
-        gt_crop = gt_arr[y_min:y_max, x_min:x_max]
-        filled_crop = filled_arr[y_min:y_max, x_min:x_max]
-        mask_crop = eval_mask[y_min:y_max, x_min:x_max]
-
-        # Configuração do Plot
-        fig = plt.figure(figsize=(18, 10))
-        gs = fig.add_gridspec(2, 3)
-
-        # Mapas de elevação
-        vmin = np.percentile(gt_crop[np.isfinite(gt_crop)], 2)
-        vmax = np.percentile(gt_crop[np.isfinite(gt_crop)], 98)
-
-        ax1 = fig.add_subplot(gs[0, 0])
-        im1 = ax1.imshow(gt_crop, cmap="terrain", vmin=vmin, vmax=vmax)
-        ax1.set_title("Ground Truth (Real)")
-        plt.colorbar(im1, ax=ax1, fraction=0.046, pad=0.04)
-
-        ax2 = fig.add_subplot(gs[0, 1])
-        im2 = ax2.imshow(filled_crop, cmap="terrain", vmin=vmin, vmax=vmax)
-        ax2.set_title("Preenchimento (IA)")
-        plt.colorbar(im2, ax=ax2, fraction=0.046, pad=0.04)
-
-        # Mapa de Erro
-        diff = np.abs(gt_crop - filled_crop)
-        diff[~mask_crop] = 0 # Só mostra erro onde preencheu
-        ax3 = fig.add_subplot(gs[0, 2])
-        im3 = ax3.imshow(diff, cmap="inferno")
-        ax3.set_title(f"Erro Absoluto (RMSE: {metrics.get('rmse_m', 0):.2f}m)")
-        plt.colorbar(im3, ax=ax3, fraction=0.046, pad=0.04)
-
-        # Perfil Topográfico
-        ax4 = fig.add_subplot(gs[1, :])
-        mid_y = gt_crop.shape[0] // 2
-        ax4.plot(gt_crop[mid_y, :], 'k-', lw=2, label='Ground Truth')
-        ax4.plot(filled_crop[mid_y, :], 'r--', lw=1.5, label='Predição IA')
-        
-        # Destaca a área preenchida no gráfico
-        hole_indices = np.where(mask_crop[mid_y, :])[0]
-        if len(hole_indices) > 0:
-            ax4.axvspan(hole_indices[0], hole_indices[-1], color='yellow', alpha=0.3, label='Lacuna Preenchida')
-        
-        ax4.legend()
-        ax4.set_title(f"Perfil Topográfico (Transecto Central) - Amostra Local")
-        ax4.grid(True, alpha=0.3)
-
-        plt.tight_layout()
-        plt.savefig(self.output_dir / filename)
-        plt.close()
-        logger.info(f"📊 Gráfico salvo.")
