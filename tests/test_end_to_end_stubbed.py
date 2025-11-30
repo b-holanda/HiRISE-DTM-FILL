@@ -64,6 +64,10 @@ def test_end_to_end_stubbed(monkeypatch, tmp_path):
 
     # Fill
     test_id = "a"
+    pair_dir = Path(tmp_path) / "dataset/v1/test" / f"test-{test_id}"
+    pair_dir.mkdir(parents=True, exist_ok=True)
+    (pair_dir / "dtm.IMG").write_text("dtm")
+    (pair_dir / "ortho.JP2").write_text("ortho")
     monkeypatch.setattr(
         fill_cli,
         "get_profile",
@@ -106,7 +110,5 @@ def test_end_to_end_stubbed(monkeypatch, tmp_path):
         ),
     )
     monkeypatch.setattr(fill_cli, "logger", types.SimpleNamespace(info=lambda *a, **k: None))
-    monkeypatch.setattr(
-        sys, "argv", ["prog", "--test", test_id, "--profile", "prod", "--mode", "local"]
-    )
+    monkeypatch.setattr(sys, "argv", ["prog", "--pair", f"test-{test_id}", "--profile", "prod"])
     fill_cli.main()

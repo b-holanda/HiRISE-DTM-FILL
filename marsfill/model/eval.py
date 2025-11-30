@@ -1,9 +1,6 @@
 import os
 import torch
 import numpy as np
-import boto3
-import tempfile
-from typing import Optional, Any, Tuple
 from transformers import DPTForDepthEstimation, DPTImageProcessor
 
 from marsfill.model.train import AvailableModels
@@ -15,7 +12,7 @@ logger = Logger()
 class Evaluator:
     """
     Classe responsável pela inferência (avaliação) do modelo de estimativa de profundidade.
-    Gerencia o carregamento do modelo (seja de caminho Local ou URI S3) e realiza a predição,
+    Gerencia o carregamento do modelo local e realiza a predição,
     retornando os dados brutos em memória.
     """
 
@@ -23,20 +20,17 @@ class Evaluator:
         self,
         pretrained_model_name: AvailableModels,
         model_path_uri: str,
-        s3_client: Optional[Any] = None,
     ) -> None:
         """
         Inicializa o modelo base e carrega os pesos treinados.
 
         Args:
             pretrained_model_name: Nome do backbone HuggingFace.
-            model_path_uri: Caminho local ou URI S3 do checkpoint .pth.
-            s3_client: Cliente Boto3 opcional (para testes/injeção).
+            model_path_uri: Caminho local do checkpoint .pth.
         """
         logger.info("Iniciando arquitetura base do avaliador")
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.s3_client = s3_client
 
         self.model = DPTForDepthEstimation.from_pretrained(pretrained_model_name.value)
 
@@ -50,58 +44,23 @@ class Evaluator:
         )
         logger.info("Modelo carregado e pronto para inferência")
 
-    def _get_s3_client(self) -> Any:
-        """
-        Retorna o cliente S3 existente ou cria um novo se necessário.
-
-        Returns:
-            Cliente Boto3.
-        """
-        if self.s3_client is None:
-            self.s3_client = boto3.client("s3")
-        return self.s3_client
-
-    def _extract_s3_bucket_and_key(self, uri: str) -> Tuple[str, str]:
-        """
-        Analisa uma URI S3 e extrai o nome do bucket e a chave do objeto.
-
-        Args:
-            uri: URI no formato s3://bucket-name/path/to/file.
-
-        Returns:
-            Nome do bucket e chave.
-        """
-        clean_uri = uri.replace("s3://", "")
-        parts = clean_uri.split("/", 1)
-        return parts[0], parts[1]
-
     def _load_model_weights(self, model_uri: str) -> None:
         """
-        Gerencia o carregamento do state_dict. Se a URI for S3, baixa para um arquivo temporário primeiro.
+        Gerencia o carregamento do state_dict de um caminho local.
 
         Args:
-            model_uri: URI de origem do arquivo .pth.
+            model_uri: Caminho de origem do arquivo .pth.
 
         Raises:
             FileNotFoundError: Se o arquivo local não existir.
         """
         logger.info(f"Carregando pesos do modelo de: {model_uri}")
 
-        if model_uri.startswith("s3://"):
-            s3_interface = self._get_s3_client()
-            bucket_name, object_key = self._extract_s3_bucket_and_key(model_uri)
+        if not os.path.exists(model_uri):
+            logger.error(f"Caminho do modelo {model_uri} não encontrado.")
+            raise FileNotFoundError(f"Caminho do modelo {model_uri} não encontrado.")
 
-            with tempfile.NamedTemporaryFile(suffix=".pth") as temporary_file:
-                logger.info(f"Baixando modelo do S3 ({bucket_name}/{object_key})...")
-                s3_interface.download_file(bucket_name, object_key, temporary_file.name)
-
-                self._apply_state_dict_from_file(temporary_file.name)
-        else:
-            if not os.path.exists(model_uri):
-                logger.error(f"Caminho do modelo {model_uri} não encontrado.")
-                raise FileNotFoundError(f"Caminho do modelo {model_uri} não encontrado.")
-
-            self._apply_state_dict_from_file(model_uri)
+        self._apply_state_dict_from_file(model_uri)
 
     def _apply_state_dict_from_file(self, file_path: str) -> None:
         """

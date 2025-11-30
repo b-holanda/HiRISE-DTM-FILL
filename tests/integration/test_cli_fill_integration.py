@@ -6,10 +6,12 @@ from marsfill.cli import fill as fill_cli
 
 
 def test_fill_cli_stubbed_local(monkeypatch, tmp_path):
-    test_id = "a"
-    dataset_root = tmp_path / "dataset/v1"
+    pair_name = "pair-a"
+    dataset_root = tmp_path / "dataset/v1/test" / pair_name
     output_root = tmp_path / "filled"
-    dataset_root.mkdir(parents=True)
+    dataset_root.mkdir(parents=True, exist_ok=True)
+    (dataset_root / "dtm.IMG").write_text("dtm")
+    (dataset_root / "ortho.JP2").write_text("ortho")
 
     def fake_profile(name):
         return {
@@ -57,10 +59,8 @@ def test_fill_cli_stubbed_local(monkeypatch, tmp_path):
     monkeypatch.setattr(fill_cli, "FillerStats", FakeStats)
     monkeypatch.setattr(fill_cli, "logger", types.SimpleNamespace(info=lambda *a, **k: None))
 
-    monkeypatch.setattr(
-        sys, "argv", ["prog", "--test", test_id, "--profile", "prod", "--mode", "local"]
-    )
+    monkeypatch.setattr(sys, "argv", ["prog", "--pair", pair_name, "--profile", "prod"])
     fill_cli.main()
 
-    expected_output_dir = output_root / f"test-{test_id}"
+    expected_output_dir = output_root / pair_name
     assert expected_output_dir.exists()

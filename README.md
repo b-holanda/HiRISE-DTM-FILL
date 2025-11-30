@@ -6,7 +6,7 @@
 
 ## Visão Geral
 
-`marsfill` é um pipeline que pega pares de produtos HiRISE (uma ortoimagem e seu DTM com buracos) e treina um modelo de IA para prever o relevo onde a fotogrametria falhou. O ETL e o treinamento agora operam apenas em modo **local** (pasta `./data`). A etapa de preenchimento continua aceitando `--mode local` ou `--mode s3` para ler/gravar resultados.
+`marsfill` é um pipeline que pega pares de produtos HiRISE (uma ortoimagem e seu DTM com buracos) e treina um modelo de IA para prever o relevo onde a fotogrametria falhou. O ETL, o treinamento e agora o preenchimento operam apenas em modo **local** (pasta `./data`).
 
 O fluxo completo é:
 1) Buscar pares DTM+ORTHO públicos do PDS HiRISE, alinhar e cortar em blocos 512×512 sem lacunas, salvando em Parquet (treino/validação) e também guardando os pares de teste integrais.
@@ -21,7 +21,7 @@ O fluxo completo é:
   2. **Treinamento de Modelo (DPT-ViT)**: usa os blocos gerados para fazer fine-tuning de um modelo de profundidade monocular baseado em Vision Transformer (`Intel/dpt-large`), com uma função de perda que combina erro por pixel, gradiente de relevo e similaridade estrutural.
   3. **Preenchimento de DTMs (Inference + Pós-processamento)**: aplica o modelo treinado sobre DTMs com lacunas, trabalhando em tiles com padding de contexto, recalibra as predições para o intervalo real do DTM original e faz um blending suave nas bordas para evitar costuras visíveis.
 
-  Todo esse fluxo é parametrizado por perfis YAML (ex.: `prod`, `test`). O dataset e o treino funcionam apenas localmente (estrutura de pastas em `./data`); o preenchimento ainda pode apontar para S3, se configurado.
+  Todo esse fluxo é parametrizado por perfis YAML (ex.: `prod`, `test`) e opera localmente na pasta `./data`.
 
 - **Sequência do Pipeline**  
   ![Dataset Sequence](docs/images/dataset_sequence.png)  
@@ -29,7 +29,7 @@ O fluxo completo é:
   ![Train Sequence](docs/images/train_sequence.png)  
   *Treinamento local: carga de perfil, criação de DataLoaders streaming, loop de épocas com perda combinada e checkpoint em `data/models`.*
   ![Fill Sequence](docs/images/fill_sequence.png)
-  *Inferência de preenchimento: leitura DTM/Ortho (local ou S3), inferência por blocos com padding, blending das bordas, geração de máscara, métricas e plots; outputs enviados ao destino configurado.*
+  *Inferência de preenchimento: leitura DTM/Ortho local, inferência por blocos com padding, blending das bordas, geração de máscara, métricas e plots; outputs gravados em `./data/filled`.*
 
 - **Backbone de Profundidade (DPT-ViT)**  
   ![DPT Architecture](docs/images/dpt_architecture.jpg)
@@ -69,7 +69,7 @@ conda activate marsfill-env
 
 ## Uso
 
-A geração do dataset e o treinamento rodam apenas em modo local (pasta padrão `./data`). A etapa de preenchimento ainda aceita `--mode local` ou `--mode s3` caso queira ler/gravar resultados em um bucket. Os comandos abaixo assumem o perfil `prod`; use `--profile test` para o perfil de teste.
+A geração do dataset, o treinamento e o preenchimento rodam apenas em modo local (pasta padrão `./data`). Os comandos abaixo assumem o perfil `prod`; use `--profile test` para o perfil de teste.
 
 ### Testes
 
@@ -138,19 +138,15 @@ Requisitos recomendados:
 - **Espaço em disco**: 100 GB
 
 ```bash
-# S3 (usa par test-a, test-b, ...)
-./fill.sh --test a --profile prod --mode s3
-
-# Local
-./fill.sh --test a --profile prod --mode local
+./fill.sh --pair test-a --profile prod
 ```
 
 Entradas:
-- Modelo: `s3://hirise-dtm-fill/models/marsfill_model.pth` ou `./data/models/marsfill_model.pth`
-- Dados de teste: `s3://hirise-dtm-fill/dataset/v1/test/test-a/{dtm.IMG,ortho.JP2}` ou `./data/dataset/v1/test/test-a/...`
+- Modelo: `./data/models/marsfill_model.pth`
+- Dados de teste: `./data/dataset/v1/test/<pasta_do_par>/{dtm.IMG,ortho.JP2}`
 
 Saídas:
-- DTM preenchido: `s3://hirise-dtm-fill/filled/test-a/predicted_dtm.tif` ou `./data/filled/test-a/predicted_dtm.tif`
+- DTM preenchido: `./data/filled/<pasta_do_par>/predicted_dtm.tif`
 - Máscara: `.../mask_predicted_dtm.tif`
 - Métricas: `.../metrics.json`
 - Gráficos: `.../result_*.jpg`

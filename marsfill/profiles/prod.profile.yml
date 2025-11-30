@@ -28,4 +28,3 @@ fill:
   dataset_prefix: "dataset/v1"
   output_prefix: "filled"
   local_base_dir: "data"
-  s3_bucket: "hirise-dtm-fill"
