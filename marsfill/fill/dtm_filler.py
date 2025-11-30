@@ -14,7 +14,8 @@ logger = Logger()
 
 class DTMFiller:
     """
-    Preenche lacunas em DTMs usando inferência de profundidade com tratamento robusto de NoData e Escala.
+    Preenche lacunas em DTMs usando inferência de profundidade,
+    evitando preencher bordas de rotação usando a ortoimagem como máscara.
     """
 
     def __init__(
@@ -58,6 +59,8 @@ class DTMFiller:
             )
         except Exception as e:
             logger.error(f"Erro no processo de preenchimento: {e}")
+            import traceback
+            traceback.print_exc()
             raise
 
     def _prepare_working_files(
@@ -77,11 +80,14 @@ class DTMFiller:
         if not dtm_dataset:
             raise FileNotFoundError("Falha ao abrir DTM.")
 
-        # Alinhamento
+        # Alinhamento (Gera uma versão temporária da ortoimagem alinhada ao DTM)
         ortho_aligned_path = dtm_path.parent / "aligned_ortho_temp.tif"
         orthophoto_dataset = self._align_rasters(dtm_dataset, orthophoto_path, ortho_aligned_path)
 
+        # --- CORREÇÃO 1: Obter a banda de máscara da Ortoimagem (canal alfa ou similar) ---
         ortho_band = orthophoto_dataset.GetRasterBand(1)
+        ortho_mask_band = orthophoto_dataset.GetMaskBand() # Banda que diz onde a imagem é válida
+
         dtm_band = dtm_dataset.GetRasterBand(1)
 
         width = dtm_dataset.RasterXSize
@@ -91,9 +97,11 @@ class DTMFiller:
 
         # Estatísticas Globais para Fallback
         logger.info("Calculando estatísticas globais do DTM para calibração...")
+        # approx_ok=True é mais rápido para arquivos grandes e suficiente aqui
         stats = dtm_band.GetStatistics(0, 1) 
         global_min, global_max, global_mean, global_std = stats
-        
+        logger.info(f"Stats Globais -> Média: {global_mean:.2f}, Std: {global_std:.2f}")
+
         mask_dataset = self._create_mask_dataset(
             mask_path, width, height, dtm_dataset.GetGeoTransform(), dtm_dataset.GetProjection()
         )
@@ -106,13 +114,13 @@ class DTMFiller:
         count_fills = 0
         for x, y in tqdm(tile_coords, desc="Processando Tiles"):
             filled = self._process_single_tile(
-                x, y, width, height, ortho_band, dtm_band, mask_band, no_data_val,
+                x, y, width, height, ortho_band, ortho_mask_band, dtm_band, mask_band, no_data_val,
                 global_stats=(global_mean, global_std)
             )
             if filled:
                 count_fills += 1
 
-        logger.info(f"Tiles processados: {count_fills}")
+        logger.info(f"Tiles processados e preenchidos: {count_fills}")
 
         dtm_dataset.FlushCache()
         mask_dataset.FlushCache()
@@ -130,6 +138,7 @@ class DTMFiller:
         bounds = [dtm_gt[0], dtm_gt[3] + dtm_gt[5] * height, dtm_gt[0] + dtm_gt[1] * width, dtm_gt[3]]
         
         try:
+            # Importante: dstAlpha=True para garantir que a borda preta da rotação seja tratada como NoData
             gdal.Warp(
                 destNameOrDestDS=str(output_path),
                 srcDSOrSrcDSTab=str(ortho_path),
@@ -137,6 +146,7 @@ class DTMFiller:
                 outputBounds=bounds,
                 xRes=dtm_gt[1], yRes=abs(dtm_gt[5]),
                 dstSRS=dtm_proj, resampleAlg="cubic",
+                dstAlpha=True # Cria banda alfa para transparência nas bordas
             )
             return gdal.Open(str(output_path), gdal.GA_ReadOnly)
         except Exception as e:
@@ -144,14 +154,22 @@ class DTMFiller:
             return gdal.Open(str(ortho_path), gdal.GA_ReadOnly)
 
     def _process_single_tile(
-        self, x, y, total_w, total_h, ortho_band, dtm_band, mask_band, no_data_val, global_stats
+        self, x, y, total_w, total_h, ortho_band, ortho_mask_band, dtm_band, mask_band, no_data_val, global_stats
     ) -> bool:
         w_tile = min(self.processing_tile_size, total_w - x)
         h_tile = min(self.processing_tile_size, total_h - y)
 
+        # --- CORREÇÃO 2: Verificar se a ortoimagem é válida nesta área ---
+        # Lê a máscara da ortoimagem (0 = inválido/borda, >0 = válido)
+        ortho_mask_data = ortho_mask_band.ReadAsArray(x, y, w_tile, h_tile)
+        
+        # Se o tile inteiro estiver na borda preta da ortoimagem, pula o processamento.
+        if not np.any(ortho_mask_data):
+            return False
+
         dtm_data = dtm_band.ReadAsArray(x, y, w_tile, h_tile)
         
-        # Detecção Robusta de NoData
+        # Detecção Robusta de NoData no DTM
         is_nan = np.isnan(dtm_data)
         if no_data_val is not None and no_data_val < -1e30:
             is_nodata = (dtm_data < -1e30)
@@ -160,7 +178,10 @@ class DTMFiller:
         else:
             is_nodata = (dtm_data < -1e30)
 
-        missing_mask = is_nodata | is_nan
+        # O "missing_mask" é onde o DTM é buraco E a ortoimagem é válida
+        # (não queremos preencher onde a ortoimagem também é buraco/borda)
+        ortho_is_valid = (ortho_mask_data > 0)
+        missing_mask = (is_nodata | is_nan) & ortho_is_valid
 
         if not np.any(missing_mask):
             mask_band.WriteArray(np.zeros_like(missing_mask, dtype=np.uint8), x, y)
@@ -177,11 +198,10 @@ class DTMFiller:
         # Inferência
         normalized_ortho = self._normalize_image(ortho_crop)
         
-        # --- CORREÇÃO AQUI: Uso explícito de argumentos nomeados para evitar troca ---
         predicted_depth_box = self.depth_evaluator.predict_depth(
             orthophoto_image=normalized_ortho,
-            target_height=bbox["height"], # Altura correta
-            target_width=bbox["width"]    # Largura correta
+            target_height=bbox["height"],
+            target_width=bbox["width"]
         )
 
         predicted_tile = self._crop_tile_from_context_box(
@@ -189,9 +209,9 @@ class DTMFiller:
         )
 
         # Denormalização com Fallback
-        valid_pixels_mask = ~missing_mask
+        valid_pixels_mask = ~missing_mask & ortho_is_valid # Só usa pixels que são válidos nos dois
         
-        if np.sum(valid_pixels_mask) > 10:
+        if np.sum(valid_pixels_mask) > 50: # Aumentei um pouco o limiar para maior segurança local
             mu_ref = np.mean(dtm_data[valid_pixels_mask])
             std_ref = np.std(dtm_data[valid_pixels_mask])
         else:
@@ -200,6 +220,7 @@ class DTMFiller:
         final_prediction = self._apply_denormalization(predicted_tile, mu_ref, std_ref)
 
         merged_tile = dtm_data.copy()
+        # Apenas aplica o preenchimento na máscara válida
         merged_tile[missing_mask] = final_prediction[missing_mask]
         
         blended_tile = self._blend_prediction_edges(merged_tile, missing_mask)
@@ -214,10 +235,17 @@ class DTMFiller:
         if std_p < 1e-6:
             scale = 0.0
         else:
+            # Adiciona pequena constante para evitar explosão de escala em áreas muito planas
             scale = std_ref / (std_p + 1e-8)
             
         shift = mu_ref - (mu_p * scale)
         out = pred_tile * scale + shift
+        
+        # Segurança extra: Clampa valores a um intervalo razoável em torno da média
+        # (ex: +/- 5 desvios padrão globais) para evitar artefatos extremos
+        lower_bound = mu_ref - 5 * std_ref
+        upper_bound = mu_ref + 5 * std_ref
+        out = np.clip(out, lower_bound, upper_bound)
         
         if not np.isfinite(out).all():
             out = np.nan_to_num(out, nan=mu_ref)
