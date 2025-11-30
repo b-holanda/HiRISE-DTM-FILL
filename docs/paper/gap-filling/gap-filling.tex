@@ -28,11 +28,13 @@
 	\maketitle
 	
 	\begin{abstract}
-		Digital Terrain Models (DTMs) generated from HiRISE imagery are essential for Martian exploration but frequently suffer from data gaps due to stereo-matching failures in low-texture or shadowed regions. This work proposes a Deep Learning approach using Vision Transformers (ViT), specifically the Dense Prediction Transformer (DPT) architecture, to infer missing topography from monocular orthophotos. We curated a dataset of valid DTM-Orthophoto pairs to train the model in a supervised manner. Results demonstrate that the ViT-based model successfully recovers morphological structures, achieving a Structural Similarity Index (SSIM) of 0.99 and a Root Mean Square Error (RMSE) of 3.33 meters in plain terrains. The proposed pipeline offers a robust, automated solution to generate analysis-ready products for planetary science.
+		numero de palavras 150 - 250
 	\end{abstract}
 	
 	\begin{resumo}
-		Modelos Digitais de Terreno (DTMs) gerados a partir de imagens HiRISE são essenciais para a exploração marciana, mas frequentemente apresentam lacunas de dados devido a falhas na correspondência estéreo em regiões de baixa textura ou sombra. Este trabalho propõe uma abordagem de Aprendizado Profundo utilizando Vision Transformers (ViT), especificamente a arquitetura Dense Prediction Transformer (DPT), para inferir a topografia ausente a partir de ortofotos monoculares. Curou-se um conjunto de dados de pares DTM-Ortoimagem válidos para treinamento supervisionado. Os resultados demonstram que o modelo baseado em ViT recupera com sucesso estruturas morfológicas, atingindo um Índice de Similaridade Estrutural (SSIM) de 0,99 e um erro médio quadrático (RMSE) de 3,33 metros em terrenos planos. O pipeline proposto oferece uma solução robusta e automatizada para gerar produtos prontos para análise na ciência planetária.
+		Numero de palavras: 150 - 250 - igual ao abstract porém em pt-BR
+		Espaço Visual (Páginas): 0.5
+		Foco Principal: Venda o peixe: Problema + Solução (ViT) + Melhor Resultado.
 	\end{resumo}
 	
 	\section{Introdução}
@@ -105,7 +107,7 @@
 		\label{fig:dpt_arch}
 	\end{figure}
 	
-	O treinamento foi orquestrado via \textit{PyTorch} com \textit{Distributed Data Parallel} (DDP). Utilizou-se o otimizador \textbf{AdamW} (decaimento de peso de 0.01) e precisão mista (AMP). Para evitar \textit{overfitting}, aplicou-se \textit{Early Stopping} com paciência de 5 épocas monitorando a perda de validação.
+	O treinamento foi orquestrado via \textit{PyTorch} com \textit{Distributed Data Parallel} (DDP) em 4 GPUs A10G de 24 GB cada (Seção \ref{subsec:hardware}). Utilizou-se o otimizador \textbf{AdamW} (decaimento de peso de 0.01) e precisão mista (AMP). Para evitar \textit{overfitting}, aplicou-se \textit{Early Stopping} com paciência de 5 épocas monitorando a perda de validação.
 	
 	Para capturar a complexidade topográfica, definiu-se uma Função de Perda Combinada ($L_{total}$), conforme a Equação \ref{eq:loss}:
 	
@@ -121,6 +123,10 @@
 		\caption{Sequência de operações durante uma época de treinamento supervisionado.}
 		\label{fig:seq_train}
 	\end{figure}
+
+	\subsection{Infraestrutura de Hardware} \label{subsec:hardware}
+	
+	Todos os experimentos foram executados em infraestrutura local seguindo as recomendações do projeto: (i) a geração de dados (ETL) foi feita com 4 núcleos de CPU, 32 GB de RAM e 2 TB de armazenamento; (ii) o treinamento utilizou \textit{Distributed Data Parallel} em 4 GPUs NVIDIA A10G (24 GB cada, total de 96 GB), 48 núcleos de CPU, 192 GB de RAM e 2 TB de disco; (iii) a inferência de preenchimento foi validada em uma GPU NVIDIA T4 de 24 GB, com 4 núcleos de CPU, 16 GB de RAM e 100 GB de armazenamento. A sincronização e os tempos reportados na Seção de Resultados referem-se a essa configuração.
 	
 	\subsection{Pipeline de Inferência e Fusão}
 	
@@ -151,7 +157,7 @@
 	
 	\section{Resultados}
 	
-	O modelo foi treinado por 7 épocas em um ambiente distribuído (DDP) com 4 GPUs. A avaliação considerou tanto a dinâmica de aprendizado quanto a precisão final em dados de teste nunca vistos pelo modelo.
+	O modelo foi treinado por 7 épocas em modo distribuído (DDP) sobre 4 GPUs A10G de 24 GB cada (Seção \ref{subsec:hardware}). A avaliação considerou tanto a dinâmica de aprendizado quanto a precisão final em dados de teste nunca vistos pelo modelo.
 	
 	\subsection{Dinâmica de Treinamento e Convergência}
 	
