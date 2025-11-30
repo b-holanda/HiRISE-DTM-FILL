@@ -6,6 +6,7 @@ from typing import Tuple
 from osgeo import gdal
 from tqdm import tqdm
 from scipy.ndimage import binary_dilation, gaussian_filter
+import torch
 
 from marsfill.model.eval import Evaluator
 from marsfill.utils import Logger
@@ -13,20 +14,17 @@ from marsfill.utils import Logger
 logger = Logger()
 
 class DTMFiller:
-    """
-    Preenche lacunas em DTMs usando inferência de profundidade,
-    evitando preencher bordas de rotação usando a ortoimagem como máscara.
-    """
-
     def __init__(
         self,
         evaluator: Evaluator,
         padding_size: int,
         tile_size: int,
+        batch_size: int = 4  # New parameter for batch processing
     ) -> None:
         self.depth_evaluator = evaluator
         self.context_padding_size = padding_size
         self.processing_tile_size = tile_size
+        self.batch_size = batch_size
 
     def fill(
         self,
@@ -80,12 +78,10 @@ class DTMFiller:
         if not dtm_dataset:
             raise FileNotFoundError("Falha ao abrir DTM.")
 
-        # Alinhamento
         ortho_aligned_path = dtm_path.parent / "aligned_ortho_temp.tif"
         orthophoto_dataset = self._align_rasters(dtm_dataset, orthophoto_path, ortho_aligned_path)
 
         ortho_band = orthophoto_dataset.GetRasterBand(1)
-        # Pega a banda de máscara (Alpha) que foi gerada pelo Warp
         ortho_mask_band = ortho_band.GetMaskBand() 
 
         dtm_band = dtm_dataset.GetRasterBand(1)
@@ -97,7 +93,7 @@ class DTMFiller:
 
         logger.info("Calculando estatísticas globais do DTM para calibração...")
         stats = dtm_band.GetStatistics(0, 1) 
-        global_min, global_max, global_mean, global_std = stats
+        global_stats = (stats[2], stats[3]) # Mean, Std
 
         mask_dataset = self._create_mask_dataset(
             mask_path, width, height, dtm_dataset.GetGeoTransform(), dtm_dataset.GetProjection()
@@ -108,14 +104,27 @@ class DTMFiller:
         
         logger.info(f"Iniciando preenchimento: {len(tile_coords)} tiles.")
         
+        # --- BATCH PROCESSING LOOP ---
+        batch_tiles = []
         count_fills = 0
-        for x, y in tqdm(tile_coords, desc="Processando Tiles"):
-            filled = self._process_single_tile(
-                x, y, width, height, ortho_band, ortho_mask_band, dtm_band, mask_band, no_data_val,
-                global_stats=(global_mean, global_std)
+        
+        # Iterate and collect batches
+        for i, (x, y) in tqdm(enumerate(tile_coords), total=len(tile_coords), desc="Processando Tiles"):
+            
+            # Prepare tile metadata
+            tile_meta = self._prepare_single_tile_input(
+                x, y, width, height, ortho_band, ortho_mask_band, dtm_band, mask_band, no_data_val
             )
-            if filled:
-                count_fills += 1
+            
+            if tile_meta:
+                batch_tiles.append(tile_meta)
+            
+            # Process batch if full or last item
+            if len(batch_tiles) >= self.batch_size or i == len(tile_coords) - 1:
+                if batch_tiles:
+                    self._process_tile_batch(batch_tiles, dtm_band, global_stats)
+                    count_fills += len(batch_tiles)
+                    batch_tiles = []
 
         logger.info(f"Tiles processados e preenchidos: {count_fills}")
 
@@ -128,10 +137,6 @@ class DTMFiller:
             except: pass
 
     def _align_rasters(self, dtm_ds, ortho_path, output_path):
-        """
-        Reamostra ortofoto para bater pixel-a-pixel com DTM.
-        Define srcNodata=0 para que bordas pretas se tornem transparentes.
-        """
         dtm_gt = dtm_ds.GetGeoTransform()
         dtm_proj = dtm_ds.GetProjection()
         width = dtm_ds.RasterXSize
@@ -146,97 +151,93 @@ class DTMFiller:
                 outputBounds=bounds,
                 xRes=dtm_gt[1], yRes=abs(dtm_gt[5]),
                 dstSRS=dtm_proj, resampleAlg="cubic",
-                # CORREÇÃO CRÍTICA AQUI:
-                srcNodata=0,  # Diz que preto (0) na entrada é NoData
-                dstAlpha=True # Cria canal alfa na saída onde srcNodata=0
+                srcNodata=0, dstAlpha=True 
             )
             return gdal.Open(str(output_path), gdal.GA_ReadOnly)
         except Exception as e:
             logger.warning(f"Warp falhou: {e}")
             return gdal.Open(str(ortho_path), gdal.GA_ReadOnly)
 
-    def _process_single_tile(
-        self, x, y, total_w, total_h, ortho_band, ortho_mask_band, dtm_band, mask_band, no_data_val, global_stats
-    ) -> bool:
+    def _prepare_single_tile_input(self, x, y, total_w, total_h, ortho_band, ortho_mask_band, dtm_band, mask_band, no_data_val):
+        """Reads data for a single tile and decides if it needs processing."""
         w_tile = min(self.processing_tile_size, total_w - x)
         h_tile = min(self.processing_tile_size, total_h - y)
 
-        # Verifica máscara de validade da ortoimagem (Alpha)
+        # 1. Check validity
         ortho_mask_data = ortho_mask_band.ReadAsArray(x, y, w_tile, h_tile)
-        
-        # Se todo o tile for transparente (borda preta), pula imediatamente
-        if not np.any(ortho_mask_data):
-            return False
+        if not np.any(ortho_mask_data): return None
 
         dtm_data = dtm_band.ReadAsArray(x, y, w_tile, h_tile)
         
-        # Detecção Robusta de NoData no DTM
         is_nan = np.isnan(dtm_data)
-        if no_data_val is not None and no_data_val < -1e30:
-            is_nodata = (dtm_data < -1e30)
-        elif no_data_val is not None:
-            is_nodata = np.isclose(dtm_data, no_data_val, equal_nan=True)
-        else:
-            is_nodata = (dtm_data < -1e30)
+        if no_data_val is not None and no_data_val < -1e30: is_nodata = (dtm_data < -1e30)
+        elif no_data_val is not None: is_nodata = np.isclose(dtm_data, no_data_val, equal_nan=True)
+        else: is_nodata = (dtm_data < -1e30)
 
-        # Só preenche se: DTM é falha (True) E Ortoimagem é válida (True)
-        # Onde a Ortoimagem for borda preta (ortho_mask_data == 0), ortho_is_valid será False
         ortho_is_valid = (ortho_mask_data > 0)
         missing_mask = (is_nodata | is_nan) & ortho_is_valid
 
         if not np.any(missing_mask):
             mask_band.WriteArray(np.zeros_like(missing_mask, dtype=np.uint8), x, y)
-            return False
+            return None
 
+        # Write mask immediately
         mask_band.WriteArray(missing_mask.astype(np.uint8), x, y)
 
+        # 2. Prepare Context Crop for Inference
         bbox = self._calculate_context_bounding_box(total_w, total_h, x, y, w_tile, h_tile)
-        
-        ortho_crop = ortho_band.ReadAsArray(
-            bbox["x_start"], bbox["y_start"], bbox["width"], bbox["height"]
-        ).astype(np.float32)
-
-        # Inferência
+        ortho_crop = ortho_band.ReadAsArray(bbox["x_start"], bbox["y_start"], bbox["width"], bbox["height"]).astype(np.float32)
         normalized_ortho = self._normalize_image(ortho_crop)
-        
-        predicted_depth_box = self.depth_evaluator.predict_depth(
-            orthophoto_image=normalized_ortho,
-            target_height=bbox["height"],
-            target_width=bbox["width"]
-        )
 
-        predicted_tile = self._crop_tile_from_context_box(
-            predicted_depth_box, x, y, bbox["x_start"], bbox["y_start"], h_tile, w_tile
-        )
+        return {
+            "x": x, "y": y, "w": w_tile, "h": h_tile,
+            "ortho_norm": normalized_ortho,
+            "bbox": bbox,
+            "dtm_data": dtm_data,
+            "missing_mask": missing_mask,
+            "ortho_valid_mask": ortho_is_valid
+        }
 
-        # Denormalização com Fallback
-        valid_pixels_mask = ~missing_mask & ortho_is_valid
+    def _process_tile_batch(self, batch_meta, dtm_band, global_stats):
+        """Processes a list of tiles at once."""
+        # Note: Currently, Evaluator.predict_depth processes one image at a time because inputs have different sizes (edge tiles).
+        # To strictly use batching in NN, we'd need to pad all inputs to same size. 
+        # For simplicity and robustness with edge tiles, we'll iterate the inference but keep IO separate.
+        # If speed is critical, resizing all context crops to a fixed size (e.g. 768x768) allows torch batching.
         
-        if np.sum(valid_pixels_mask) > 50:
-            mu_ref = np.mean(dtm_data[valid_pixels_mask])
-            std_ref = np.std(dtm_data[valid_pixels_mask])
-        else:
-            mu_ref, std_ref = global_stats
+        for tile in batch_meta:
+            # Inference
+            predicted_depth_box = self.depth_evaluator.predict_depth(
+                orthophoto_image=tile["ortho_norm"],
+                target_height=tile["bbox"]["height"],
+                target_width=tile["bbox"]["width"]
+            )
+
+            predicted_tile = self._crop_tile_from_context_box(
+                predicted_depth_box, tile["x"], tile["y"], tile["bbox"]["x_start"], tile["bbox"]["y_start"], tile["h"], tile["w"]
+            )
+
+            # Denormalization
+            valid_pixels_mask = ~tile["missing_mask"] & tile["ortho_valid_mask"]
+            if np.sum(valid_pixels_mask) > 50:
+                mu_ref = np.mean(tile["dtm_data"][valid_pixels_mask])
+                std_ref = np.std(tile["dtm_data"][valid_pixels_mask])
+            else:
+                mu_ref, std_ref = global_stats
+                
+            final_prediction = self._apply_denormalization(predicted_tile, mu_ref, std_ref)
+
+            merged_tile = tile["dtm_data"].copy()
+            merged_tile[tile["missing_mask"]] = final_prediction[tile["missing_mask"]]
             
-        final_prediction = self._apply_denormalization(predicted_tile, mu_ref, std_ref)
+            blended_tile = self._blend_prediction_edges(merged_tile, tile["missing_mask"])
 
-        merged_tile = dtm_data.copy()
-        merged_tile[missing_mask] = final_prediction[missing_mask]
-        
-        blended_tile = self._blend_prediction_edges(merged_tile, missing_mask)
-
-        dtm_band.WriteArray(blended_tile, x, y)
-        return True
+            dtm_band.WriteArray(blended_tile, tile["x"], tile["y"])
 
     def _apply_denormalization(self, pred_tile, mu_ref, std_ref):
         mu_p = np.mean(pred_tile)
         std_p = np.std(pred_tile)
-
-        if std_p < 1e-6:
-            scale = 0.0
-        else:
-            scale = std_ref / (std_p + 1e-8)
-            
+        scale = 0.0 if std_p < 1e-6 else std_ref / (std_p + 1e-8)
         shift = mu_ref - (mu_p * scale)
         out = pred_tile * scale + shift
         

@@ -15,6 +15,9 @@ from marsfill.model.train import AvailableModels
 from marsfill.utils import Logger
 from marsfill.fill.filler_stats import FillerStats
 from tabulate import tabulate
+from osgeo import gdal
+
+gdal.UseExceptions()
 
 logger = Logger()
 
@@ -87,7 +90,7 @@ def run_batch_process(test_dir, output_root_dir, model_path_str, profile="prod")
     try:
         model_enum = AvailableModels.INTEL_DPT_LARGE 
         evaluator = Evaluator(pretrained_model_name=model_enum, model_path_uri=model_path_str)
-        filler = DTMFiller(evaluator=evaluator, padding_size=128, tile_size=512)
+        filler = DTMFiller(evaluator=evaluator, padding_size=128, tile_size=512, batch_size=8)
         
     except Exception as e:
         logger.error(f"Erro fatal ao carregar modelo: {e}")
