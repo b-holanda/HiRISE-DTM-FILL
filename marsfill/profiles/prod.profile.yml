@@ -30,8 +30,8 @@ fill:
   local_base_dir: "data"
 
 hole_gen:
-  holes: 5
-  min_radius: 8
-  max_radius: 16
+  holes: 10
+  min_radius: 128
+  max_radius: 256
   seed: 42
   nodata: -3.4028234663852886e38
