@@ -4,15 +4,15 @@ import json
 import argparse
 import gc
 import torch
+import numpy as np
 from pathlib import Path
 from tqdm import tqdm
-import numpy as np
+
 
 from marsfill.fill.dtm_filler import DTMFiller
 from marsfill.model.eval import Evaluator
 from marsfill.model.train import AvailableModels
 from marsfill.utils import Logger
-from osgeo import gdal
 
 from marsfill.fill.filler_stats import FillerStats
 
@@ -20,13 +20,10 @@ from tabulate import tabulate
 
 logger = Logger()
 
-gdal.UseExceptions()
-
 def find_dataset_pairs(root_dir):
     """Encontra os pares de arquivos (Input, Ortho, GT)."""
     cases = []
     root = Path(root_dir)
-    # Procura recursivamente pelos arquivos com nodata
     inputs = list(root.rglob("*_with_nodata.tif"))
     
     if not inputs:
@@ -39,7 +36,6 @@ def find_dataset_pairs(root_dir):
         folder = input_path.parent
         base_name = input_path.name.replace("_with_nodata.tif", "")
         
-        # Busca Ground Truth
         gt_candidates = [
             folder / (base_name + ".IMG"),
             folder / (base_name + ".tif"),
@@ -47,14 +43,12 @@ def find_dataset_pairs(root_dir):
         ]
         gt_path = next((p for p in gt_candidates if p.exists()), None)
         
-        # Busca Ortoimagem via ID de órbita
         orbit_id_parts = base_name.split('_')[1:3]
         if len(orbit_id_parts) >= 2:
             orbit_key = f"{orbit_id_parts[0]}_{orbit_id_parts[1]}"
             ortho_candidates = list(folder.glob(f"*{orbit_key}*.JP2")) + \
                                list(folder.glob(f"*{orbit_key}*.tif"))
             
-            # Filtra para não pegar o próprio DTM
             ortho_path = next((p for p in ortho_candidates 
                                if "DTEPC" not in p.name and "with_nodata" not in p.name), None)
         else:
@@ -68,9 +62,6 @@ def find_dataset_pairs(root_dir):
                 "ortho": ortho_path,
                 "folder": folder.name
             })
-        else:
-            # logger.warning(f"Skipping {base_name}: Falta GT ou Ortho.")
-            pass
 
     return cases
 
@@ -82,13 +73,8 @@ def run_batch_process(test_dir, output_root_dir, model_path_str, profile="prod")
     logger.info(f"Carregando modelo de IA: {model_path_str}")
     
     try:
-        # Carrega o modelo UMA ÚNICA VEZ na memória
-        # Certifique-se de que AvailableModels.DPT_LARGE corresponde ao seu enum em train.py
-        model_enum = AvailableModels.INTEL_DPT_LARGE 
+        model_enum = AvailableModels.DPT_LARGE 
         evaluator = Evaluator(pretrained_model_name=model_enum, model_path_uri=model_path_str)
-        
-        # Instancia o Filler (reutilizável)
-        # Ajuste padding/tile conforme seu perfil prod/test se desejar
         filler = DTMFiller(evaluator=evaluator, padding_size=128, tile_size=512)
         
     except Exception as e:
@@ -116,14 +102,17 @@ def run_batch_process(test_dir, output_root_dir, model_path_str, profile="prod")
             
             # 2. Cálculo de Métricas e Gráficos
             stats = FillerStats(output_dir=case_out_dir)
-            metrics, gt_arr, filled_arr, mask_arr = stats.calculate_metrics(
+            
+            # --- CORREÇÃO AQUI: Recebe apenas 1 valor (metrics) ---
+            metrics = stats.calculate_metrics(
                 gt_path=case['gt'],
                 filled_path=final_dtm,
                 mask_path=final_mask
             )
             
-            if metrics['evaluated_pixels'] > 0:
+            if metrics and metrics.get('evaluated_pixels', 0) > 0:
                 # Gera os 6 gráficos/imagens separados
+                # O método generate_all_outputs carrega os arquivos por conta própria
                 stats.generate_all_outputs(
                     gt_path=case['gt'],
                     input_path=case['input'],
@@ -133,14 +122,12 @@ def run_batch_process(test_dir, output_root_dir, model_path_str, profile="prod")
                     metrics=metrics
                 )
                 
-                # Salva resultado na lista para o relatório final
                 res_data = metrics.copy()
                 res_data['id'] = case['id']
                 res_data['type'] = case['folder']
                 results.append(res_data)
             else:
                 pass 
-                # tqdm.write(f"Aviso: {case['id']} - Validação ignorada (sem pixels).")
 
         except Exception as e:
             tqdm.write(f"Erro em {case['id']}: {e}")
@@ -149,15 +136,7 @@ def run_batch_process(test_dir, output_root_dir, model_path_str, profile="prod")
 
         finally:
             # --- OTIMIZAÇÃO DE MEMÓRIA ---
-            # Remove referências a arrays grandes da memória
-            if 'gt_arr' in locals(): del gt_arr
-            if 'filled_arr' in locals(): del filled_arr
-            if 'mask_arr' in locals(): del mask_arr
-            
-            # Força o Garbage Collector do Python
             gc.collect()
-            
-            # Limpa VRAM da GPU se estiver usando CUDA
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
@@ -189,14 +168,15 @@ def run_batch_process(test_dir, output_root_dir, model_path_str, profile="prod")
         
         print(tabulate(table_data, headers=headers, tablefmt="github"))
 
+
         print("-" * 65)
-        print(f"MÉDIA GLOBAL ({len(results)} amostras):")
-        print(f"RMSE Médio: {np.mean(rmses):.4f} m")
-        print(f"SSIM Médio: {np.mean(ssims):.4f}")
-        print(f"Tempo Total: {np.sum(times):.2f} s")
+        if len(results) > 0:
+            print(f"MÉDIA GLOBAL ({len(results)} amostras):")
+            print(f"RMSE Médio: {np.mean(rmses):.4f} m")
+            print(f"SSIM Médio: {np.mean(ssims):.4f}")
+            print(f"Tempo Total: {np.sum(times):.2f} s")
         print("="*65)
         
-        # Salva CSV
         import csv
         csv_path = Path(output_root_dir) / "batch_summary_optimized.csv"
         with open(csv_path, 'w', newline='') as f:
@@ -214,7 +194,6 @@ def main():
     
     args = parser.parse_args()
     
-    # Valida caminhos
     if not Path(args.model).exists():
         logger.error(f"Modelo não encontrado em: {args.model}")
         sys.exit(1)
