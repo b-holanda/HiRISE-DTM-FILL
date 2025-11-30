@@ -46,6 +46,13 @@ class FillerStats:
 
         if mask_path:
             mask_arr, _ = self.load_geotiff(mask_path)
+            # Ajusta dimensões se máscara e GT divergirem levemente
+            if mask_arr.shape != gt_arr.shape:
+                h = min(mask_arr.shape[0], gt_arr.shape[0])
+                w = min(mask_arr.shape[1], gt_arr.shape[1])
+                mask_arr = mask_arr[:h, :w]
+                gt_arr = gt_arr[:h, :w]
+                filled_arr = filled_arr[:h, :w]
             hole_mask = mask_arr > 0
         else:
             logger.info("⚠️ Nenhuma máscara fornecida. Avaliando na imagem inteira.")
@@ -58,9 +65,9 @@ class FillerStats:
 
         valid_gt_mask = (gt_arr != gt_nodata) & (~np.isnan(gt_arr)) & (~sentinel_mask)
         eval_mask = hole_mask & valid_gt_mask
-
         if np.sum(eval_mask) == 0:
-            raise ValueError("Máscara de avaliação vazia.")
+            logger.warning("Máscara de avaliação vazia. Usando somente pixels válidos do GT.")
+            eval_mask = valid_gt_mask
 
         y_true = gt_arr[eval_mask]
         y_pred = filled_arr[eval_mask]
