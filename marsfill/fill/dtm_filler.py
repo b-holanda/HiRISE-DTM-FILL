@@ -2,17 +2,23 @@ import os
 import shutil
 import numpy as np
 from pathlib import Path
-from typing import Tuple, List, Optional
+from typing import Tuple, List
 from osgeo import gdal
 from tqdm import tqdm
 from scipy.ndimage import binary_dilation, gaussian_filter
 
+# Ajuste o import conforme sua estrutura. 
+# Se Evaluator estiver em marsfill.model.eval, mantenha assim.
 from marsfill.model.eval import Evaluator
 from marsfill.utils import Logger
 
 logger = Logger()
 
 class DTMFiller:
+    """
+    Preenche lacunas em DTMs usando inferência de profundidade com tratamento robusto de NoData.
+    """
+
     def __init__(
         self,
         evaluator: Evaluator,
@@ -64,7 +70,7 @@ class DTMFiller:
         working_dtm_path = working_directory / f"{base_filename}_filled.tif"
         working_mask_path = working_directory / f"{base_filename}_filled_mask.tif"
 
-        # Sempre sobrescreve para garantir estado limpo
+        # Sempre sobrescreve para garantir estado limpo a cada execução
         shutil.copy(source_dtm_path, working_dtm_path)
         return working_dtm_path, working_mask_path
 
@@ -76,6 +82,7 @@ class DTMFiller:
             raise FileNotFoundError("Falha ao abrir DTM.")
 
         # Alinhamento de Ortofoto e DTM
+        # Cria um arquivo temporário alinhado para garantir que pixels batam 1:1
         ortho_aligned_path = dtm_path.parent / "aligned_ortho_temp.tif"
         orthophoto_dataset = self._align_rasters(dtm_dataset, orthophoto_path, ortho_aligned_path)
 
@@ -85,11 +92,7 @@ class DTMFiller:
         width = dtm_dataset.RasterXSize
         height = dtm_dataset.RasterYSize
         
-        # Identificação segura de NoData
         no_data_val = dtm_band.GetNoDataValue()
-        if no_data_val is None:
-            # Valor padrão seguro para float32 se não definido
-            no_data_val = -3.4028235e38 
 
         # Cria dataset da máscara
         mask_dataset = self._create_mask_dataset(
@@ -99,7 +102,7 @@ class DTMFiller:
 
         tile_coords = self._generate_processing_grid(width, height)
         
-        logger.info(f"Iniciando preenchimento: {len(tile_coords)} tiles")
+        logger.info(f"Iniciando preenchimento: {len(tile_coords)} tiles a processar.")
         
         count_fills = 0
         for x, y in tqdm(tile_coords, desc="Processando Tiles"):
@@ -123,7 +126,7 @@ class DTMFiller:
                 pass
 
     def _align_rasters(self, dtm_ds, ortho_path, output_path):
-        """Reamostra ortofoto para bater pixel-a-pixel com DTM."""
+        """Reamostra ortofoto para bater pixel-a-pixel com DTM usando GDAL Warp."""
         dtm_gt = dtm_ds.GetGeoTransform()
         dtm_proj = dtm_ds.GetProjection()
         width = dtm_ds.RasterXSize
@@ -149,7 +152,7 @@ class DTMFiller:
             )
             return gdal.Open(str(output_path), gdal.GA_ReadOnly)
         except Exception as e:
-            logger.warning(f"Alinhamento falhou, tentando abrir direto: {e}")
+            logger.warning(f"Alinhamento via Warp falhou, tentando abrir direto: {e}")
             return gdal.Open(str(ortho_path), gdal.GA_ReadOnly)
 
     def _process_single_tile(
@@ -160,17 +163,30 @@ class DTMFiller:
 
         dtm_data = dtm_band.ReadAsArray(x, y, w_tile, h_tile)
         
-        # Detecta lacunas (NoData ou NaN)
-        is_nodata = (dtm_data == no_data_val)
+        # --- LÓGICA DE DETECÇÃO ROBUSTA ---
+        # Resolve o problema de precisão de float (ex: -3.4e38 vs -3.40001e38)
         is_nan = np.isnan(dtm_data)
-        missing_mask = is_nodata | is_nan
+        
+        if no_data_val is not None and no_data_val < -1e30:
+            # Se o NoData for um número negativo muito grande (padrão GDAL),
+            # usa comparação por limiar (< -1e30) para pegar todos os pixels inválidos.
+            is_nodata = (dtm_data < -1e30)
+        elif no_data_val is not None:
+            # Para outros valores (ex: -9999), usa tolerância
+            is_nodata = np.isclose(dtm_data, no_data_val, equal_nan=True)
+        else:
+            # Se não há metadado, assume padrão float32 mínimo
+            is_nodata = (dtm_data < -1e30)
 
-        # Se não há buraco, marca máscara como 0 e retorna
+        missing_mask = is_nodata | is_nan
+        # ----------------------------------
+
+        # Se não há buraco neste tile, marca máscara como 0 e pula
         if not np.any(missing_mask):
             mask_band.WriteArray(np.zeros_like(missing_mask, dtype=np.uint8), x, y)
             return False
 
-        # Marca onde existia buraco na máscara de saída (Valor 1)
+        # Escreve na máscara onde vamos preencher (1 = Preenchido)
         mask_band.WriteArray(missing_mask.astype(np.uint8), x, y)
 
         # Contexto expandido para inferência
@@ -197,22 +213,20 @@ class DTMFiller:
         valid_pixels_mask = ~missing_mask
         final_prediction = predicted_tile
 
-        # Só ajusta estatística se houver pixels válidos suficientes no tile para referência
+        # Usa estatística local se houver pixels válidos suficientes
         if np.sum(valid_pixels_mask) > 10:
             final_prediction = self._denormalize_depth_prediction(
                 predicted_tile, dtm_data, valid_pixels_mask
             )
         else:
-            # Fallback: Se o tile é 100% buraco, não temos referência local.
-            # Idealmente usaria vizinhos, mas aqui mantemos a predição crua ou média global
+            # Fallback para tiles 100% vazios (sem referência local)
+            # Mantém a predição crua ou tenta pegar média global (melhoria futura)
             pass 
 
-        # Blend e Merge
+        # Merge e Blending
         merged_tile = dtm_data.copy()
-        # Preenche apenas onde é missing_mask
         merged_tile[missing_mask] = final_prediction[missing_mask]
         
-        # Suaviza bordas
         blended_tile = self._blend_prediction_edges(merged_tile, missing_mask)
 
         dtm_band.WriteArray(blended_tile, x, y)
@@ -249,19 +263,14 @@ class DTMFiller:
         return np.stack([norm] * 3, axis=-1)
 
     def _denormalize_depth_prediction(self, pred, real, valid_mask):
-        """
-        Ajusta a predição (0-1 ou arbitraria) para a escala real em metros
-        baseando-se na média/desvio dos pixels VÁLIDOS (valid_mask).
-        """
         mu_r = np.mean(real[valid_mask])
         std_r = np.std(real[valid_mask])
         
         mu_p = np.mean(pred[valid_mask])
         std_p = np.std(pred[valid_mask])
 
-        # Evita divisão por zero se a predição for plana
         if std_p < 1e-6:
-            scale = 0.0 # Predição sem contraste, não escala o ruído
+            scale = 0.0
         else:
             scale = std_r / (std_p + 1e-8)
             
@@ -269,16 +278,13 @@ class DTMFiller:
 
         out = pred * scale + shift
         
-        # Limpeza de Infinitos/NaNs gerados matematicamente
         if not np.isfinite(out).all():
             out = np.nan_to_num(out, nan=mu_r)
             
         return out
 
     def _blend_prediction_edges(self, dtm, mask, width=5):
-        # Cria zona de transição na borda do buraco
         dilated = binary_dilation(mask, iterations=width)
-        # Borda = Dilatado - Buraco Original
         border_zone = dilated & (~mask)
         
         if not np.any(border_zone):
@@ -287,6 +293,5 @@ class DTMFiller:
         blurred = gaussian_filter(dtm, sigma=2.0)
         
         out = dtm.copy()
-        # Aplica blur apenas na zona de transição para suavizar o "degrau"
         out[border_zone] = blurred[border_zone]
         return out
