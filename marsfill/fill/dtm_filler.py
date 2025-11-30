@@ -2,7 +2,7 @@ import os
 import shutil
 import numpy as np
 from pathlib import Path
-from typing import Tuple, List
+from typing import Tuple
 from osgeo import gdal
 from tqdm import tqdm
 from scipy.ndimage import binary_dilation, gaussian_filter
@@ -89,15 +89,11 @@ class DTMFiller:
         
         no_data_val = dtm_band.GetNoDataValue()
 
-        # --- CORREÇÃO: Estatísticas Globais ---
-        # Calcula média e desvio padrão do DTM inteiro para usar como fallback
-        # se encontrarmos um tile 100% vazio (buraco puro).
+        # Estatísticas Globais para Fallback
         logger.info("Calculando estatísticas globais do DTM para calibração...")
-        stats = dtm_band.GetStatistics(0, 1) # approx_ok=False, force=True
+        stats = dtm_band.GetStatistics(0, 1) 
         global_min, global_max, global_mean, global_std = stats
-        logger.info(f"Stats Globais -> Média: {global_mean:.2f}, Std: {global_std:.2f}")
-
-        # Cria máscara
+        
         mask_dataset = self._create_mask_dataset(
             mask_path, width, height, dtm_dataset.GetGeoTransform(), dtm_dataset.GetProjection()
         )
@@ -111,7 +107,7 @@ class DTMFiller:
         for x, y in tqdm(tile_coords, desc="Processando Tiles"):
             filled = self._process_single_tile(
                 x, y, width, height, ortho_band, dtm_band, mask_band, no_data_val,
-                global_stats=(global_mean, global_std) # Passa stats globais
+                global_stats=(global_mean, global_std)
             )
             if filled:
                 count_fills += 1
@@ -180,26 +176,27 @@ class DTMFiller:
 
         # Inferência
         normalized_ortho = self._normalize_image(ortho_crop)
+        
+        # --- CORREÇÃO AQUI: Uso explícito de argumentos nomeados para evitar troca ---
         predicted_depth_box = self.depth_evaluator.predict_depth(
-            normalized_ortho, bbox["width"], bbox["height"]
+            orthophoto_image=normalized_ortho,
+            target_height=bbox["height"], # Altura correta
+            target_width=bbox["width"]    # Largura correta
         )
 
         predicted_tile = self._crop_tile_from_context_box(
             predicted_depth_box, x, y, bbox["x_start"], bbox["y_start"], h_tile, w_tile
         )
 
-        # --- CORREÇÃO: Denormalização com Fallback ---
+        # Denormalização com Fallback
         valid_pixels_mask = ~missing_mask
         
         if np.sum(valid_pixels_mask) > 10:
-            # Temos dados locais suficientes para calibrar
             mu_ref = np.mean(dtm_data[valid_pixels_mask])
             std_ref = np.std(dtm_data[valid_pixels_mask])
         else:
-            # Tile 100% buraco (ou quase): Usa estatística GLOBAL
             mu_ref, std_ref = global_stats
             
-        # Aplica a denormalização usando a referência escolhida (local ou global)
         final_prediction = self._apply_denormalization(predicted_tile, mu_ref, std_ref)
 
         merged_tile = dtm_data.copy()
@@ -211,7 +208,6 @@ class DTMFiller:
         return True
 
     def _apply_denormalization(self, pred_tile, mu_ref, std_ref):
-        """Aplica a normalização estatística baseada em alvos de referência."""
         mu_p = np.mean(pred_tile)
         std_p = np.std(pred_tile)
 
@@ -227,7 +223,6 @@ class DTMFiller:
             out = np.nan_to_num(out, nan=mu_ref)
         return out
 
-    # -- Métodos auxiliares sem alteração --
     def _create_mask_dataset(self, path, w, h, geo, proj):
         driver = gdal.GetDriverByName("GTiff")
         ds = driver.Create(str(path), w, h, 1, gdal.GDT_Byte, options=["COMPRESS=LZW"])
