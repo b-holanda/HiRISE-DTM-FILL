@@ -151,20 +151,24 @@ class FillerStats:
         gs = fig.add_gridspec(2, 3)
 
         ax1 = fig.add_subplot(gs[0, 0])
-        finite_gt = np.isfinite(gt_crop)
+        finite_gt = np.isfinite(gt_crop) & (np.abs(gt_crop) < 1e19)
         if not np.any(finite_gt):
             finite_gt = np.ones_like(gt_crop, dtype=bool)
-        vmin_gt, vmax_gt = np.percentile(gt_crop[finite_gt], (2, 98))
+        gt_vals = gt_crop[finite_gt]
+        vmin_gt, vmax_gt = np.percentile(gt_vals, (2, 98))
+        gt_crop = np.clip(gt_crop, vmin_gt, vmax_gt)
 
         im1 = ax1.imshow(gt_crop, cmap="terrain", vmin=vmin_gt, vmax=vmax_gt)
         ax1.set_title("Ground Truth (Real)")
         plt.colorbar(im1, ax=ax1, fraction=0.046, pad=0.04)
 
         ax2 = fig.add_subplot(gs[0, 1])
-        finite_filled = np.isfinite(filled_crop)
+        finite_filled = np.isfinite(filled_crop) & (np.abs(filled_crop) < 1e19)
         if not np.any(finite_filled):
             finite_filled = np.ones_like(filled_crop, dtype=bool)
-        vmin_fill, vmax_fill = np.percentile(filled_crop[finite_filled], (2, 98))
+        filled_vals = filled_crop[finite_filled]
+        vmin_fill, vmax_fill = np.percentile(filled_vals, (2, 98))
+        filled_crop = np.clip(filled_crop, vmin_fill, vmax_fill)
         im2 = ax2.imshow(filled_crop, cmap="terrain", vmin=vmin_fill, vmax=vmax_fill)
         ax2.set_title("Preenchimento (IA)")
         plt.colorbar(im2, ax=ax2, fraction=0.046, pad=0.04)
