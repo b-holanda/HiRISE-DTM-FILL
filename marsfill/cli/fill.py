@@ -39,7 +39,7 @@ def main():
     try:
         # Inicialização
         # Nota: Ajuste AvailableModels.DPT_LARGE conforme sua enumeração real em train.py
-        evaluator = Evaluator(pretrained_model_name=AvailableModels.DPT_LARGE, model_path_uri=str(model_path))
+        evaluator = Evaluator(pretrained_model_name=AvailableModels.INTEL_DPT_LARGE, model_path_uri=str(model_path))
         
         filler = DTMFiller(evaluator=evaluator, padding_size=128, tile_size=512)
         
