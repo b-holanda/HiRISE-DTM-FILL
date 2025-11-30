@@ -2,14 +2,13 @@ import torch
 from torch.utils.data import IterableDataset, get_worker_info
 import pyarrow.parquet as parquet
 import numpy as np
-from typing import List, Tuple, Iterator
+from typing import List, Tuple, Iterator, Optional
 from transformers import DPTImageProcessor
-
 
 class StreamingHiRISeDataset(IterableDataset):
     """
     Dataset iterável para carregar dados HiRISe de arquivos Parquet em streaming.
-    Suporta processamento distribuído (DDP) e múltiplos workers de DataLoader.
+    Versão blindada contra erros de Buffer Size e dados corrompidos.
     """
 
     def __init__(
@@ -21,17 +20,6 @@ class StreamingHiRISeDataset(IterableDataset):
         image_tile_size: int = 512,
         estimated_rows_per_file: int = 500,
     ) -> None:
-        """
-        Inicializa o dataset de streaming.
-
-        Parâmetros:
-            parquet_file_paths (List[str]): Lista de caminhos para os arquivos .parquet.
-            image_processor (DPTImageProcessor): Processador de imagens do HuggingFace para pré-processamento.
-            process_rank (int): O rank (ID) do processo atual em um ambiente distribuído.
-            total_process_count (int): O número total de processos (GPUs) no ambiente distribuído.
-            image_tile_size (int): A dimensão (altura e largura) das imagens quadradas.
-            estimated_rows_per_file (int): Estimativa de linhas por arquivo para cálculo de __len__.
-        """
         super().__init__()
         self.parquet_file_paths = sorted(parquet_file_paths)
         self.image_processor = image_processor
@@ -41,17 +29,9 @@ class StreamingHiRISeDataset(IterableDataset):
         self.estimated_rows_per_file = estimated_rows_per_file
 
     def _determine_worker_files(self) -> List[str]:
-        """
-        Calcula quais arquivos este worker específico deve processar.
-        Considera tanto a divisão por GPU (rank) quanto a divisão por Worker do DataLoader.
-
-        Retorno:
-            List[str]: Subconjunto de caminhos de arquivos atribuídos a este worker.
-        """
         files_assigned_to_process = self.parquet_file_paths[
             self.process_rank :: self.total_process_count
         ]
-
         worker_information = get_worker_info()
 
         if worker_information is None:
@@ -61,48 +41,56 @@ class StreamingHiRISeDataset(IterableDataset):
                 worker_information.id :: worker_information.num_workers
             ]
 
-    def _convert_bytes_to_tensors(
-        self, ortho_bytes: bytes, dtm_bytes: bytes
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _safe_decode_buffer(self, buffer: bytes, name: str) -> Optional[np.ndarray]:
         """
-        Converte os bytes brutos do Parquet em tensores PyTorch processados.
-        Método isolado para facilitar testes unitários sem necessidade de I/O de disco.
-
-        Parâmetros:
-            ortho_bytes (bytes): Bytes da imagem ortofoto.
-            dtm_bytes (bytes): Bytes do modelo digital de terreno (DTM).
-
-        Retorno:
-            Tuple[torch.Tensor, torch.Tensor]: Tupla contendo (pixel_values, dtm_tensor).
+        Tenta decodificar o buffer validando estritamente o tamanho.
+        Retorna None se o tamanho for incompatível, evitando o crash.
         """
-        # Dados vêm em float16 (pipeline atual) ou float32 (arquivos antigos/tests). Detectamos pelo tamanho.
-        expected_elements = self.image_tile_size * self.image_tile_size
+        num_pixels = self.image_tile_size * self.image_tile_size
+        size_f16 = num_pixels * 2
+        size_f32 = num_pixels * 4
+        buffer_len = len(buffer)
 
-        def _decode(buffer: bytes) -> np.ndarray:
-            if len(buffer) == expected_elements * np.dtype(np.float16).itemsize:
-                return (
-                    np.frombuffer(buffer, dtype=np.float16)
-                    .reshape(self.image_tile_size, self.image_tile_size)
-                    .astype(np.float32)
-                )
+        if buffer_len == size_f16:
+            return (
+                np.frombuffer(buffer, dtype=np.float16)
+                .reshape(self.image_tile_size, self.image_tile_size)
+                .astype(np.float32)
+            )
+        elif buffer_len == size_f32:
             return (
                 np.frombuffer(buffer, dtype=np.float32)
                 .reshape(self.image_tile_size, self.image_tile_size)
                 .astype(np.float32)
             )
+        else:
+            print(f"⚠️  DADO CORROMPIDO ({name}): Recebido {buffer_len} bytes. Esperado {size_f32} (f32) ou {size_f16} (f16).")
+            return None
 
-        orthophoto_numpy_array = _decode(ortho_bytes)
+    def _convert_bytes_to_tensors(
+        self, ortho_bytes: bytes, dtm_bytes: bytes
+    ) -> Optional[Tuple[torch.Tensor, torch.Tensor]]:
+        """
+        Retorna None se houver falha na conversão.
+        """
+        
+        orthophoto_numpy_array = self._safe_decode_buffer(ortho_bytes, "Ortho")
+        if orthophoto_numpy_array is None:
+            return None
 
-        digital_terrain_model_numpy_array = _decode(dtm_bytes).copy()
+        digital_terrain_model_numpy_array = self._safe_decode_buffer(dtm_bytes, "DTM")
+        if digital_terrain_model_numpy_array is None:
+            return None
+        
+        digital_terrain_model_numpy_array = digital_terrain_model_numpy_array.copy()
 
         orthophoto_rgb_array = np.stack(
             [orthophoto_numpy_array, orthophoto_numpy_array, orthophoto_numpy_array], axis=-1
         )
 
         processed_inputs = self.image_processor(orthophoto_rgb_array, return_tensors="pt")
-
         pixel_values_tensor = processed_inputs["pixel_values"].squeeze(0)
-
+        
         digital_terrain_model_tensor = (
             torch.from_numpy(digital_terrain_model_numpy_array).float().unsqueeze(0)
         )
@@ -110,12 +98,6 @@ class StreamingHiRISeDataset(IterableDataset):
         return pixel_values_tensor, digital_terrain_model_tensor
 
     def __iter__(self) -> Iterator[Tuple[torch.Tensor, torch.Tensor]]:
-        """
-        Itera sobre os arquivos atribuídos, lendo grupos de linhas e gerando pares de tensores.
-
-        Retorno:
-            Iterator[Tuple[torch.Tensor, torch.Tensor]]: Gerador que produz (imagem_entrada, profundidade_alvo).
-        """
         files_assigned_to_worker = self._determine_worker_files()
 
         for file_path in files_assigned_to_worker:
@@ -127,20 +109,20 @@ class StreamingHiRISeDataset(IterableDataset):
                     dataframe = row_group_batch.to_pandas()
 
                     for _, data_row in dataframe.iterrows():
-                        yield self._convert_bytes_to_tensors(
+                        result = self._convert_bytes_to_tensors(
                             data_row["ortho_bytes"], data_row["dtm_bytes"]
                         )
+                        
+                        # SE O RESULTADO FOR NONE (CORROMPIDO), PULA SEM CRASHAR
+                        if result is None:
+                            continue
+                            
+                        yield result
 
             except Exception as error:
-                print(f"Erro crítico ao ler arquivo {file_path}: {error}")
+                # Captura erros de leitura do arquivo Parquet em si
+                print(f"❌ Erro crítico ao ler arquivo {file_path}: {error}")
                 continue
 
     def __len__(self) -> int:
-        """
-        Retorna o tamanho estimado do dataset.
-        Nota: Em IterableDatasets, isso é apenas uma estimativa para barras de progresso.
-
-        Retorno:
-            int: Número total estimado de amostras.
-        """
         return len(self.parquet_file_paths) * self.estimated_rows_per_file
