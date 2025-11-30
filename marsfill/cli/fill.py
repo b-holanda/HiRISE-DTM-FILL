@@ -5,8 +5,7 @@ from marsfill.fill.dtm_filler import DTMFiller
 from marsfill.model.eval import Evaluator
 from marsfill.model.train import AvailableModels
 from marsfill.utils import Logger
-from marsfill.stats import FillerStats  # Certifique-se que o import está correto (pode ser marsfill.fill.filler_stats dependendo da sua pasta)
-
+from marsfill.fill.filler_stats import FillerStats
 # Se o arquivo filler_stats.py estiver em marsfill/fill/, use:
 # from marsfill.fill.filler_stats import FillerStats
 
@@ -50,13 +49,6 @@ def main():
             ortho_path=ortho_path,
             output_root=str(out_dir)
         )
-        
-        # Avaliação e Geração de Gráficos
-        # Importante: Importe FillerStats do local correto onde você salvou o arquivo acima
-        try:
-            from marsfill.fill.filler_stats import FillerStats
-        except ImportError:
-            from marsfill.stats import FillerStats
 
         stats = FillerStats(output_dir=out_dir)
         
