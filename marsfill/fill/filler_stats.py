@@ -63,26 +63,24 @@ class FillerStats:
         if gt_nodata is None:
             gt_nodata = -3.4028234663852886e38
 
+        finite_mask_full = np.isfinite(gt_arr) & np.isfinite(filled_arr)
         valid_gt_mask = (gt_arr != gt_nodata) & (~np.isnan(gt_arr)) & (~sentinel_mask)
         eval_mask = hole_mask & valid_gt_mask
         if np.sum(eval_mask) == 0:
             logger.warning("Máscara de avaliação vazia. Usando somente pixels válidos do GT.")
             eval_mask = valid_gt_mask
 
-        y_true = gt_arr[eval_mask]
-        y_pred = filled_arr[eval_mask]
-
-        # Remove qualquer valor infinito/Nan antes das métricas
-        finite_mask = np.isfinite(y_true) & np.isfinite(y_pred)
-        y_true = y_true[finite_mask]
-        y_pred = y_pred[finite_mask]
-        if y_true.size == 0:
+        metrics_mask = eval_mask & finite_mask_full
+        if np.sum(metrics_mask) == 0:
             raise ValueError("Sem pixels válidos para avaliação após remoção de NaN/Inf.")
+
+        y_true = gt_arr[metrics_mask]
+        y_pred = filled_arr[metrics_mask]
 
         rmse = np.sqrt(np.mean((y_true - y_pred) ** 2))
         mae = np.mean(np.abs(y_true - y_pred))
 
-        valid_values = gt_arr[valid_gt_mask & finite_mask]
+        valid_values = gt_arr[metrics_mask]
         min_val, max_val = float(valid_values.min()), float(valid_values.max())
         scale = max(max_val - min_val, 1.0)
 
