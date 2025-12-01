@@ -53,14 +53,14 @@
 		\centering
 		\begin{subfigure}[b]{0.48\textwidth}
 			\centering
-			\includegraphics[width=\textwidth, keepaspectratio]{intro_imagem_orthoretificada.png}
+			\includegraphics[height=6cm, keepaspectratio]{intro_imagem_orthoretificada.png}
 			\caption{Ortoimagem HiRISE (Textura)}
 			\label{fig:ortho}
 		\end{subfigure}
 		\hfill
 		\begin{subfigure}[b]{0.48\textwidth}
 			\centering
-			\includegraphics[width=\textwidth, keepaspectratio]{intro_dtm_HiRISE.png}
+			\includegraphics[height=6cm, keepaspectratio]{intro_dtm_HiRISE.png}
 			\caption{DTM com Lacunas (NoData)}
 			\label{fig:dtm}
 		\end{subfigure}
@@ -86,25 +86,65 @@
 	
 	\begin{figure}[htbp]
 		\centering
-		\includegraphics[width=0.85\textwidth, keepaspectratio]{metodologia_dtm_title_stride.png}
+		\includegraphics[width=0.7\textwidth, keepaspectratio]{metodologia_dtm_title_stride.png}
 		\caption{Estratégia de extração e recorte. A sobreposição (stride) garante maior volume de dados e robustez nas bordas.}
 		\label{fig:tiling_process}
 	\end{figure}
 	
 	Um filtro de qualidade rigoroso foi aplicado: apenas recortes contendo 100\% de pixels válidos de elevação foram mantidos, descartando-se qualquer amostra com valores \textit{NoData}. Isso garantiu que o modelo aprendesse exclusivamente com a "verdade terrestre" fotogramétrica confiável. Os dados resultantes foram normalizados para o intervalo $[0, 1]$ e serializados em formato \textit{Parquet} para otimização de I/O durante o treinamento distribuído.
 	
-	\subsection{Arquitetura de Rede: Por que Transformers?}
+	\subsection{Caracterização Estatística do Dataset}
+	
+	A robustez de modelos de aprendizado profundo para topografia planetária é estritamente dependente da diversidade geomorfológica e radiométrica dos dados de treino. Para mitigar vieses de amostragem — como a predominância de terrenos planos que poderiam levar a rede a convergir para uma solução trivial (média plana) —, realizou-se uma análise estatística das distribuições dos tiles processados.
+	
+	Observa-se na Figura \ref{fig:stat_rough} (Rugosidade) uma distribuição de cauda longa à direita. Isso é crítico para a validação aeroespacial, pois indica que o modelo foi exposto a amostras de alta variância topográfica (escarpas, crateras profundas), e não apenas a planícies suaves (o pico da curva). Isso força a rede a aprender gradientes de alta frequência espacial.
+	
+	\begin{figure}[H]
+		\centering
+		\includegraphics[width=0.75\textwidth]{desvio_padrao_rugosidade_do_terreno_dtms.png} 
+		\caption{Rugosidade do Terreno. Presença significativa de terrenos acidentados}
+		\label{fig:stat_rough}
+	\end{figure}
+	
+	Paralelamente, a Figura \ref{fig:stat_albedo} (Albedo) demonstra uma cobertura abrangente de condições de iluminação. A curva centrada em 0.5 com espalhamento significativo comprova que o dataset inclui desde regiões de sombra profunda (regolito basáltico escuro) até áreas de alta refletância (possíveis depósitos de gelo ou dunas claras). Essa diversidade radiométrica é fundamental para garantir que o mecanismo de atenção do Vision Transformer não se vicie em um único padrão de brilho, permitindo a extração de forma a partir de sombreamento (\textit{Shape-from-Shading}) em diversos cenários geológicos.
+	
+	\begin{figure}[H]
+		\centering
+		\includegraphics[width=0.8\textwidth]{distribuição_do_albedo_dataset_orthoimagens.png}
+		\caption{Distribuição de Albedo (Brilho Médio). Variedade de condições de iluminação}
+		\label{fig:stat_albedo}
+	\end{figure} 
+	
+	Por fim, a correlação entre a complexidade visual (Figura \ref{fig:stat_visual}) e a elevação relativa (Figura \ref{fig:stat_elev}) sugere que as ortoimagens contêm entropia (informação de textura) suficiente para mapear as variações de relevo, validando a hipótese de que a inferência monocular é viável neste domínio.
+	
+	\begin{figure}[H]
+		\centering
+		\includegraphics[width=0.8\textwidth]{complexidade_visual.png}
+		\caption{Complexidade Visual (Textura). Riqueza de textura para inferência visual}
+		\label{fig:stat_visual}
+	\end{figure}
+	
+	\begin{figure}[H]
+		\centering
+		\includegraphics[width=0.8\textwidth]{distribuição_de_elevação_relativa_dtms.png}
+		\caption{Elevação Relativa Normalizada. Normalização balanceada dos dados de entrada}
+		\label{fig:stat_elev}
+	\end{figure}
+
+	As distribuições Gaussianas e de cauda longa confirmam a diversidade necessária para generalização. A análise evidencia que o dataset não se limita a casos ideais, abrangendo a complexidade estocástica da superfície marciana.
+	
+	\subsection{Arquitetura do Modelo}
 	
 	Adotou-se a arquitetura \textit{Dense Prediction Transformer} (DPT) (Figura \ref{fig:dpt_arch}), inicializada com pesos \texttt{Intel/dpt-large}. A escolha por Transformers em detrimento de CNNs clássicas (como U-Net) é fundamentada na capacidade de modelagem de contexto global.
 	
-	Em uma CNN, o campo receptivo efetivo cresce lentamente com a profundidade da rede. Isso significa que, para inferir a altura de uma duna, a rede "olha" apenas para a vizinhança imediata. Se a duna for muito larga e homogênea, a CNN perde a referência de onde a duna começa e termina. O \textit{Vision Transformer}, através do mecanismo de auto-atenção (\textit{Self-Attention}), permite que cada pixel (ou *patch* da imagem) atenda a todos os outros pixels simultaneamente desde as primeiras camadas. Isso é crucial para terrenos marcianos, onde a inclinação local depende do contexto geológico macroscópico.
-	
-	\begin{figure}[htbp]
+	\begin{figure}[H]
 		\centering
 		\includegraphics[width=1.0\textwidth, keepaspectratio]{metodologia_dpt_architecture.jpg}
 		\caption{Arquitetura DPT. A substituição do encoder convolucional por um Transformer permite que o modelo capture contexto global, essencial para resolver ambiguidades em texturas homogêneas. Adaptado de \cite{ranftl2021vision}.}
 		\label{fig:dpt_arch}
 	\end{figure}
+	
+	Em uma CNN, o campo receptivo efetivo cresce lentamente com a profundidade da rede. Isso significa que, para inferir a altura de uma duna, a rede "olha" apenas para a vizinhança imediata. Se a duna for muito larga e homogênea, a CNN perde a referência de onde a duna começa e termina. O \textit{Vision Transformer}, através do mecanismo de auto-atenção (\textit{Self-Attention}), permite que cada pixel (ou *patch* da imagem) atenda a todos os outros pixels simultaneamente desde as primeiras camadas. Isso é crucial para terrenos marcianos, onde a inclinação local depende do contexto geológico macroscópico.
 	
 	Para o treinamento, definiu-se uma Função de Perda Combinada ($L_{total}$) projetada para preservar tanto a altimetria quanto a morfologia:
 	\begin{equation} \label{eq:loss}
@@ -217,13 +257,13 @@
 	
 	\subsection{Morfologia vs. Altimetria Absoluta}
 	
-	O dado mais impactante é a discrepância entre o RMSE (~14m em dunas) e o SSIM (>0.999). O RMSE alto em terrenos acidentados decorre da ambiguidade de escala inerente à visão monocular (\textit{scale ill-posedness}). Sem uma referência estéreo ou laser, o modelo infere a "forma" correta das dunas baseada no sombreamento, mas pode errar a amplitude vertical exata ou o nível base (offset).
+	O dado mais impactante é a discrepância entre o RMSE (~14m em dunas) e o SSIM ($>0.999$). O RMSE alto em terrenos acidentados decorre da ambiguidade de escala inerente à visão monocular (\textit{scale ill-posedness}). Sem uma referência estéreo ou laser, o modelo infere a "forma" correta das dunas baseada no sombreamento, mas pode errar a amplitude vertical exata ou o nível base (offset).
 	
 	No entanto, para a segurança de rovers, a \textbf{morfologia} é frequentemente mais crítica que a altitude absoluta. Algoritmos de planejamento de trajetória (como A* ou D*) calculam o custo de travessia baseados na inclinação (\textit{slope}) e na rugosidade do terreno. A Figura \ref{fig:perfil} demonstra que, embora exista um deslocamento vertical, as derivadas do terreno (a forma das curvas) são preservadas.
 	
 	\begin{figure}[htbp]
 		\centering
-		\includegraphics[width=0.95\textwidth]{profile_graph.jpg}
+		\includegraphics[width=0.8\textwidth]{profile_graph.jpg}
 		\caption{Perfil topográfico comparativo. As discrepâncias de altura são sistemáticas (offset), mas a rugosidade e a tendência de inclinação são preservadas, validando o uso para análise de trafegabilidade.}
 		\label{fig:perfil}
 	\end{figure}
