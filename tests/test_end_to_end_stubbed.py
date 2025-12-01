@@ -72,18 +72,6 @@ def test_end_to_end_stubbed(monkeypatch, tmp_path):
     dtm_path.write_text("dtm")
     ortho_path.write_text("ortho")
     gt_path.write_text("gt")
-    monkeypatch.setattr(
-        fill_cli,
-        "get_profile",
-        lambda name: {
-            "fill": {
-                "model_path": "models/marsfill_model.pth",
-                "padding_size": 1,
-                "tile_size": 2,
-                "local_base_dir": str(tmp_path),
-            }
-        },
-    )
     monkeypatch.setattr(fill_cli, "Evaluator", lambda *a, **k: None)
     monkeypatch.setattr(
         fill_cli,
@@ -107,11 +95,31 @@ def test_end_to_end_stubbed(monkeypatch, tmp_path):
         fill_cli,
         "FillerStats",
         lambda output_dir: types.SimpleNamespace(
-            calculate_metrics=lambda **kw: ({}, None, None, None),
+            calculate_metrics=lambda **kw: (
+                {
+                    "rmse_m": 0.0,
+                    "mae_m": 0.0,
+                    "ssim": 0.0,
+                    "execution_time_s": 0.0,
+                    "evaluated_pixels": 0,
+                },
+                None,
+                None,
+                None,
+            ),
             plot_results=lambda **kw: None,
+            generate_all_outputs=lambda **kw: None,
         ),
     )
-    monkeypatch.setattr(fill_cli, "logger", types.SimpleNamespace(info=lambda *a, **k: None))
+    monkeypatch.setattr(
+        fill_cli,
+        "logger",
+        types.SimpleNamespace(
+            info=lambda *a, **k: None,
+            warning=lambda *a, **k: None,
+            error=lambda *a, **k: None,
+        ),
+    )
     monkeypatch.setattr(
         sys,
         "argv",

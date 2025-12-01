@@ -49,5 +49,5 @@ def test_filler_stats_with_mock_gdal(monkeypatch, tmp_path):
     monkeypatch.setattr(filler_stats, "gdal", type("G", (), {"Open": staticmethod(fake_open)}))
 
     stats = filler_stats.FillerStats(output_dir=tmp_path)
-    metrics, *_ = stats.calculate_metrics(gt_path, filled_path, mask_path)
+    metrics = stats.calculate_metrics(gt_path, filled_path, mask_path)
     assert "rmse_m" in metrics and metrics["rmse_m"] >= 0

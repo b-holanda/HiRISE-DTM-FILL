@@ -24,12 +24,7 @@ def test_fill_flow_local(monkeypatch, tmp_path):
     def fake_execute(self, ortho_path, dtm_path, mask_path):
         called["execute"] = True
 
-    def fake_finalize(self, working_dtm_path, working_mask_path, destination_root):
-        called["finalize"] = True
-        return str(working_dtm_path), str(working_mask_path)
-
     monkeypatch.setattr(DTMFiller, "_execute_filling_process", fake_execute)
-    monkeypatch.setattr(DTMFiller, "_finalize_output", fake_finalize)
 
     ortho = tmp_path / "o.jp2"
     dtm = tmp_path / "d.img"
@@ -40,5 +35,5 @@ def test_fill_flow_local(monkeypatch, tmp_path):
         dtm_path=dtm, ortho_path=ortho, output_root=str(tmp_path)
     )
 
-    assert called["execute"] and called["finalize"]
+    assert called["execute"]
     assert filled_uri.endswith(".tif") and mask_uri.endswith(".tif")

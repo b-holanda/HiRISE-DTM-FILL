@@ -33,6 +33,7 @@ def test_fill_cli_stubbed_local(monkeypatch, tmp_path):
             pass
 
         def fill(self, dtm_path, ortho_path, output_root, keep_local_output=False):
+            Path(output_root).mkdir(parents=True, exist_ok=True)
             # Retorna URIs/caminhos simulados
             return (
                 str(Path(output_root) / "dtm_filled.tif"),
@@ -44,19 +45,37 @@ def test_fill_cli_stubbed_local(monkeypatch, tmp_path):
 
     class FakeStats:
         def __init__(self, output_dir):
+            Path(output_dir).mkdir(parents=True, exist_ok=True)
             self.output_dir = output_dir
 
         def calculate_metrics(self, gt_path, filled_path, mask_path):
-            return {"rmse": 0.0}, None, None, None
+            metrics = {
+                "rmse_m": 0.0,
+                "mae_m": 0.0,
+                "ssim": 0.0,
+                "execution_time_s": 0.0,
+                "evaluated_pixels": 0,
+            }
+            return metrics, None, None, None
 
         def plot_results(self, **kwargs):
             return None
+        
+        def generate_all_outputs(self, **kwargs):
+            return None
 
-    monkeypatch.setattr(fill_cli, "get_profile", fake_profile)
     monkeypatch.setattr(fill_cli, "Evaluator", FakeEvaluator)
     monkeypatch.setattr(fill_cli, "DTMFiller", FakeFiller)
     monkeypatch.setattr(fill_cli, "FillerStats", FakeStats)
-    monkeypatch.setattr(fill_cli, "logger", types.SimpleNamespace(info=lambda *a, **k: None))
+    monkeypatch.setattr(
+        fill_cli,
+        "logger",
+        types.SimpleNamespace(
+            info=lambda *a, **k: None,
+            warning=lambda *a, **k: None,
+            error=lambda *a, **k: None,
+        ),
+    )
 
     monkeypatch.setattr(
         sys,
