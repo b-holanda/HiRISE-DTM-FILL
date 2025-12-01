@@ -81,6 +81,7 @@
 	Inicialmente, cada DTM foi reprojetado e alinhado pixel a pixel com sua respectiva ortoimagem utilizando a biblioteca GDAL, aplicando reamostragem cúbica para minimizar artefatos. Em seguida, implementou-se uma estratégia de recorte (\textit{tiling}) com janela deslizante de $512 \times 512$ pixels e passo (\textit{stride}) de 256 pixels (Figura \ref{fig:tiling_process}).
 	
 	Um filtro de qualidade rigoroso foi aplicado: apenas recortes contendo 100\% de pixels válidos de elevação foram mantidos, descartando-se qualquer amostra com valores \textit{NoData}. Isso garantiu que o modelo aprendesse exclusivamente com a "verdade terrestre" fotogramétrica. Os dados resultantes foram normalizados para o intervalo $[0, 1]$ e serializados em formato \textit{Parquet} para otimização de I/O, divididos em conjuntos de treino (80\%) e validação (20\%).
+	Uma amostra dos recortes finais (par ortoimagem/DTM) é mostrada na Figura \ref{fig:tiles_amostra}.
 	
 	\begin{figure}[H]
 		\centering
@@ -94,6 +95,21 @@
 		\includegraphics[width=1.0\textwidth, height=0.85\textheight, keepaspectratio]{metodologia_dataset_sequence.png}
 		\caption{Fluxo detalhado de aquisição, limpeza e preparação dos dados (Dataset Pipeline).}
 		\label{fig:seq_dataset}
+	\end{figure}
+	
+	\begin{figure}[H]
+		\centering
+		\begin{subfigure}[b]{0.45\textwidth}
+			\includegraphics[width=\textwidth]{resultado_tile_ortho.png}
+			\caption{Tile de ortoimagem HiRISE.}
+		\end{subfigure}
+		\hfill
+		\begin{subfigure}[b]{0.45\textwidth}
+			\includegraphics[width=\textwidth]{resultado_tile_dtm.png}
+			\caption{Tile de DTM correspondente.}
+		\end{subfigure}
+		\caption{Exemplo de par de recortes $512 \times 512$ após o filtro de qualidade (sem \textit{NoData}).}
+		\label{fig:tiles_amostra}
 	\end{figure}
 	
 	\subsection{Arquitetura de Rede e Treinamento}
@@ -126,7 +142,22 @@
 
 	\subsection{Infraestrutura de Hardware} \label{subsec:hardware}
 	
-	Todos os experimentos foram executados em infraestrutura local seguindo as recomendações do projeto: (i) a geração de dados (ETL) foi feita com 4 núcleos de CPU, 32 GB de RAM e 2 TB de armazenamento; (ii) o treinamento utilizou \textit{Distributed Data Parallel} em 4 GPUs NVIDIA A10G (24 GB cada, total de 96 GB), 48 núcleos de CPU, 192 GB de RAM e 2 TB de disco; (iii) a inferência de preenchimento foi validada em uma GPU NVIDIA T4 de 24 GB, com 4 núcleos de CPU, 16 GB de RAM e 100 GB de armazenamento. A sincronização e os tempos reportados na Seção de Resultados referem-se a essa configuração.
+	A Tabela \ref{tab:hardware} resume as configurações empregadas em cada fase. Todos os tempos e métricas reportados baseiam-se nesse perfil de infraestrutura local.
+	
+	\begin{table}[H]
+		\centering
+		\caption{Configurações de hardware utilizadas nos experimentos.}
+		\label{tab:hardware}
+		\begin{tabular}{lcccc}
+			\toprule
+			\textbf{Fase} & \textbf{GPU} & \textbf{CPU} & \textbf{RAM} & \textbf{Disco} \\
+			\midrule
+			ETL/Tiling & Sem GPU & 4 núcleos & 32 GB & 2 TB \\
+			Treinamento (DDP) & 4× NVIDIA A10G (24 GB) & 48 núcleos & 192 GB & 2 TB \\
+			Inferência (Fill) & 1× NVIDIA T4 (24 GB) & 4 núcleos & 16 GB & 100 GB \\
+			\bottomrule
+		\end{tabular}
+	\end{table}
 	
 	\subsection{Pipeline de Inferência e Fusão}
 	
@@ -158,6 +189,54 @@
 	\section{Resultados}
 	
 	O modelo foi treinado por 7 épocas em modo distribuído (DDP) sobre 4 GPUs A10G de 24 GB cada (Seção \ref{subsec:hardware}). A avaliação considerou tanto a dinâmica de aprendizado quanto a precisão final em dados de teste nunca vistos pelo modelo.
+	
+	A Tabela \ref{tab:hyperparams} consolida os hiperparâmetros do perfil \texttt{prod} usados no treinamento e na inferência.
+	
+	\begin{table}[H]
+		\centering
+		\caption{Hiperparâmetros do perfil \texttt{prod} (treinamento e inferência).}
+		\label{tab:hyperparams}
+		\begin{tabular}{lcc}
+			\toprule
+			\textbf{Categoria} & \textbf{Parâmetro} & \textbf{Valor} \\
+			\midrule
+			Treinamento & Épocas planejadas & 50 (Early Stopping em 7) \\
+			Treinamento & Batch size & 8 \\
+			Treinamento & Otimizador / LR & AdamW / $1\times10^{-5}$ \\
+			Treinamento & Decaimento de peso & 0.01 \\
+			Treinamento & Threads de \textit{dataloader} & 4 \\
+			Treinamento & Pesos da perda $(w_{L1}, w_{grad}, w_{SSIM})$ & (0.6, 0.3, 0.1) \\
+			\midrule
+			Inferência & Backbone & Intel/dpt-large \\
+			Inferência & Tamanho do tile / padding & $512 \times 512$ / 128 px \\
+			\bottomrule
+		\end{tabular}
+	\end{table}
+	
+	\subsection{Custos Operacionais (AWS)}
+	
+	Com base no registro de faturamento da AWS (arquivo \texttt{docs/results/costs.csv}) para o período 2025-10-01 a 2025-11-01, cobrindo todas as etapas (ETL, treinamento DDP e inferência), o custo total foi de US\$ 1{,}940{,}49. A Tabela \ref{tab:aws_costs} resume os principais componentes.
+	
+	\begin{table}[H]
+		\centering
+		\caption{Principais componentes de custo na AWS (US\$).}
+		\label{tab:aws_costs}
+		\begin{tabular}{lc}
+			\toprule
+			\textbf{Serviço} & \textbf{Custo (US\$)} \\
+			\midrule
+			EC2-Instâncias & 1{,}315{,}87 \\
+			Elastic File System (EFS) & 327{,}69 \\
+			EC2-Outros & 204{,}77 \\
+			S3 & 66{,}16 \\
+			SageMaker & 12{,}39 \\
+			VPC & 5{,}46 \\
+			Demais serviços (ECR, ELB, RDS, etc.) & 8{,}16 \\
+			\midrule
+			\textbf{Total} & \textbf{1{,}940{,}49} \\
+			\bottomrule
+		\end{tabular}
+	\end{table}
 	
 	\subsection{Dinâmica de Treinamento e Convergência}
 	
