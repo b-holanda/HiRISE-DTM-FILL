@@ -29,7 +29,8 @@ conda activate marsfill-env
 ```
 3) Rode tudo em lote (baixa dados de teste e modelo, gera buracos e valida):
 ```bash
-bash fill_all.sh
+sudo chmod a+x fill_all.sh
+./fill_all.sh
 ```
 Saídas: predições, gráficos e `batch_summary_optimized.csv` em `data/filled_batch_results/...`.
 
@@ -41,7 +42,8 @@ Saídas: predições, gráficos e `batch_summary_optimized.csv` em `data/filled_
   ```
 - **Inferência única** (usa download automático de dados/modelo se faltar)  
   ```bash
-  bash fill.sh --profile prod \
+  sudo chmod a+x fill.sh
+  ./fill.sh --profile prod \
     --dtm data/dataset/v1/test/dunes/DTEPC_088676_2540_088162_2540_A01_with_nodata.tif \
     --ortho data/dataset/v1/test/dunes/ESP_088676_2540_RED_A_01_ORTHO.JP2 \
     --gt data/dataset/v1/test/dunes/DTEPC_088676_2540_088162_2540_A01.IMG \
@@ -49,14 +51,19 @@ Saídas: predições, gráficos e `batch_summary_optimized.csv` em `data/filled_
   ```
 - **Gerar buracos sintéticos em todos os DTMs de teste**  
   ```bash
-  bash hole_gen.sh --profile prod
+  sudo chmod a+x hole_gen.sh
+  ./hole_gen.sh --profile prod
   ```
 - **Dataset completo (opcional, 860 GB)**  
   ```bash
+  rm -rf data
+  sudo chmod a+x dataset.sh
   ./dataset.sh --profile prod   # baixa dataset.tar se ./data não existir
   ```
 - **Treino (opcional; requer múltiplas GPUs para velocidade)**  
   ```bash
+  rm -rf data # se for usar o dataset já gerado que está armazenado no s3
+  sudo chmod a+x train.sh
   ./train.sh --profile prod
   ```
 - **Lint/format**  
@@ -81,8 +88,8 @@ Saídas: predições, gráficos e `batch_summary_optimized.csv` em `data/filled_
 
 ## Resultados
 
-- Resumo visual em `docs/results/README.md`.
-- Destaques: distribuição de tiles (`docs/images/build_dataset_*.png`), exemplos de alinhamento/tiling (`docs/images/dtm_*`, `docs/images/tile_*`), 21/21 testes passando e cobertura ~67% (HTML em `htmlcov/`).
+- Resumo visual em `https://b-holanda.github.io/HiRISE-DTM-FILL/`.
+- Destaques: 21/21 testes passando e cobertura ~67% (HTML em `htmlcov/`).
 
 ## Licença
 
