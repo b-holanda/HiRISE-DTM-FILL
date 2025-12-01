@@ -1,25 +1,50 @@
 #!/bin/bash
 
-# =================================================================================================
-# SCRIPT DE ORQUESTRAÇÃO DE TREINAMENTO MARSFILL
-#
-# Descrição:
-#   Configura o ambiente de execução, define o PYTHONPATH e detecta o hardware disponível.
-#   Decide automaticamente entre execução distribuída (torchrun) ou execução simples (python)
-#   baseado no número de GPUs detectadas.
-#
-# Argumentos:
-#   $@ : Todos os argumentos passados para este script serão encaminhados para o train.py
-#        (ex: --profile dev, --profile prod)
-#
-# Variáveis de Ambiente (Opcionais - Defaults definidos abaixo):
-#   SM_CHANNEL_TRAIN      : Caminho dos dados de treino.
-#   SM_CHANNEL_VALIDATION : Caminho dos dados de validação.
-#   SM_MODEL_DIR          : Diretório onde o modelo final será salvo.
-# =================================================================================================
-
+# Define o diretório raiz do projeto
 PROJECT_ROOT_DIRECTORY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export PYTHONPATH="${PROJECT_ROOT_DIRECTORY}:${PYTHONPATH}"
+
+# Configurações do Dataset
+DATA_DIR="${PROJECT_ROOT_DIRECTORY}/data"
+DATASET_URL="https://hirise-dtm-fill.s3.us-east-1.amazonaws.com/dataset.tar"
+TAR_FILE="dataset.tar"
+
+# --- 1. Verificação e Preparação do Ambiente (Automated Setup) ---
+
+if [ ! -d "$DATA_DIR" ]; then
+    echo "📂 Diretório 'data' não encontrado. Iniciando configuração automática..."
+    
+    mkdir -p "$DATA_DIR"
+    cd "$DATA_DIR" || exit 1
+
+    echo "⬇️  Baixando dataset (860.0 GB)... Isso pode demorar."
+    # wget com -c (continue) para retomar downloads falhos e --show-progress para barra visual
+    wget -c --show-progress "$DATASET_URL" -O "$TAR_FILE"
+
+    echo "📦 Extraindo arquivos..."
+    
+    # Lógica para Barra de Progresso na Descompressão
+    if command -v pv >/dev/null 2>&1; then
+        # Se 'pv' estiver instalado, usa para mostrar barra de progresso baseada no tamanho
+        pv "$TAR_FILE" | tar -xf -
+    else
+        # Fallback se não tiver 'pv': usa tar verbose padrão
+        echo "⚠️  'pv' não encontrado para barra de progresso. Instalando 'sudo apt install pv' ficaria mais bonito."
+        echo "   Usando modo verbose padrão..."
+        tar -xvf "$TAR_FILE"
+    fi
+
+    # Opcional: Remover o tar após extrair para economizar espaço
+    # rm "$TAR_FILE"
+    
+    cd "$PROJECT_ROOT_DIRECTORY" || exit 1
+    echo "✅ Setup de dados concluído."
+else
+    echo "📂 Diretório 'data' já existe. Pulando download."
+fi
+
+echo "---------------------------------------------------"
+
 
 # Define defaults apenas se as variaveis nao estiverem definidas no ambiente
 export SM_CHANNEL_TRAIN="${SM_CHANNEL_TRAIN:-data/dataset/v1/train}"
